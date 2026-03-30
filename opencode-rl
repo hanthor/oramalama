@@ -1,0 +1,100 @@
+#!/bin/bash
+
+# Configuration
+MODEL="hf://unsloth/Qwen3-Coder-Next-GGUF:Q4_K_M"
+CONTAINER_NAME="ramalama-opencode"
+LOCAL_ENDPOINT="http://localhost:8080/v1"
+REAL_OPENCODE="/home/linuxbrew/.linuxbrew/bin/opencode"
+
+# Minimum resources required (in GB)
+# Qwen3-Coder-Next Q4_K_M is ~45GB, let's suggest 48GB free total
+REQUIRED_GB=48
+
+# Function to check if ramalama is running
+is_ramalama_running() {
+    ramalama ps --noheading | grep -q "${CONTAINER_NAME}"
+}
+
+check_resources() {
+    # Strix Halo uses Unified Memory (GTT/RAM)
+    # Get available RAM from 'free -g' (available column)
+    AVAIL_RAM=$(free -g | awk '/^Mem:/{print $7}')
+    
+    # Get available GTT (Graphics Translation Table) in GB - This is the unified pool
+    AVAIL_GTT=0
+    GTT_TOTAL_PATH="/sys/class/drm/card1/device/mem_info_gtt_total"
+    GTT_USED_PATH="/sys/class/drm/card1/device/mem_info_gtt_used"
+    
+    if [[ -f "$GTT_TOTAL_PATH" && -f "$GTT_USED_PATH" ]]; then
+        TOTAL_GTT_BYTES=$(cat "$GTT_TOTAL_PATH")
+        USED_GTT_BYTES=$(cat "$GTT_USED_PATH")
+        AVAIL_GTT=$(( (TOTAL_GTT_BYTES - USED_GTT_BYTES) / 1024 / 1024 / 1024 ))
+    fi
+
+    # Since GTT is carved out of RAM, we should be careful not to double count,
+    # but 'available RAM' usually excludes pinned GTT.
+    # On Strix Halo, the GTT reflects the actual available pool for the GPU.
+    TOTAL_AVAIL=$AVAIL_GTT
+    
+    if [ "$TOTAL_AVAIL" -lt "$REQUIRED_GB" ]; then
+        gum style --border normal --margin "1" --padding "1" --border-foreground 212 \
+            "⚠️  LOW MEMORY DETECTED (Strix Halo Unified Pool)" \
+            "Available GTT/Unified: ${AVAIL_GTT}GB" \
+            "Required for Model: ${REQUIRED_GB}GB"
+            
+        if gum confirm "Do you want to kill some processes to free up RAM?"; then
+            # Generate a list of top 20 memory consumers
+            # Format: PID | %MEM | COMMAND
+            SELECTION=$(ps axo pid,pmem,comm --sort=-pmem | head -n 21 | tail -n +2 | \
+                awk '{printf "%-7s | %-5s%% | %s\n", $1, $2, $3}' | \
+                gum choose --header "Select a process to kill (Press Esc to skip)" --no-limit)
+            
+            if [ -n "$SELECTION" ]; then
+                # Extract PIDs from selection
+                PIDS=$(echo "$SELECTION" | awk '{print $1}')
+                for PID in $PIDS; do
+                    gum spin --spinner dot --title "Killing process $PID..." -- sleep 0.5
+                    kill -9 "$PID" 2>/dev/null && echo "✅ Killed $PID" || echo "❌ Failed to kill $PID"
+                done
+                # Re-check after killing
+                check_resources
+            fi
+        fi
+    fi
+}
+
+# Start ramalama if not running
+if ! is_ramalama_running; then
+    check_resources
+    
+    gum style --foreground 212 "🚀 Starting RamaLama with Qwen3-Coder-Next..."
+    ramalama serve --detach --name "${CONTAINER_NAME}" "${MODEL}"
+    
+    # Wait for the server to be ready
+    MAX_WAIT=300
+    WAIT_COUNT=0
+    gum spin --spinner pulse --title "Waiting for RamaLama server to be ready..." -- bash -c "
+        while ! curl -s ${LOCAL_ENDPOINT}/models > /dev/null; do
+            sleep 1
+            ((WAIT_COUNT++))
+            if [ \$WAIT_COUNT -ge ${MAX_WAIT} ]; then exit 1; fi
+        done
+    "
+    if [ $? -eq 0 ]; then
+        gum style --foreground 121 "✅ RamaLama Server is ready!"
+    else
+        gum style --foreground 196 "❌ Error: RamaLama server timed out."
+        exit 1
+    fi
+fi
+
+# Run the real opencode
+gum style --foreground 212 "💻 Launching Open Code..."
+"${REAL_OPENCODE}" "$@"
+
+# Cleanup: After opencode exits, check if we are the last one
+sleep 1
+if ! pgrep -f "bin/opencode" > /dev/null; then
+    gum style --foreground 212 "💤 Last Open Code instance closed. Stopping RamaLama..."
+    ramalama stop "${CONTAINER_NAME}"
+fi
