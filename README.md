@@ -1,4 +1,4 @@
-# opencode-rl
+# oramalama
 
 Automated lifecycle management for [RamaLama](https://github.com/containers/ramalama) and [OpenCode](https://opencode.ai).
 
@@ -12,10 +12,10 @@ Automated lifecycle management for [RamaLama](https://github.com/containers/rama
 ## Installation
 
 1. Ensure `ramalama`, `opencode`, and `gum` are installed.
-2. Copy `opencode-rl` to your `PATH` (e.g., `~/.local/bin/`).
+2. Copy `oramalama` to your `PATH` (e.g., `~/.local/bin/`).
 3. Alias `opencode` to the script in your shell config:
    ```bash
-   alias opencode='~/.local/bin/opencode-rl'
+   alias opencode='~/.local/bin/oramalama'
    ```
 
 ## Requirements
