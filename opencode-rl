@@ -11,6 +11,39 @@ GOOSE_CONFIG="${HOME}/.config/goose/config.yaml"
 # Default model: Gemma 4 31B (dense, best coding quality) at Q4_K_M quant (~18GB, fits Strix Halo 96GB pool)
 DEFAULT_MODEL="hf://unsloth/gemma-4-31B-it-GGUF:Q4_K_M"
 
+# ---------------------------------------------------------------------------
+# get_ctx_size: return an appropriate context window for a given model name.
+# Strix Halo has ~113GB GPU pool but only ~31GB system RAM. KV cache lives on
+# GPU (fine), but host-side compute buffers and the process RSS live in system
+# RAM. Larger models leave less headroom for KV even on GPU, so we scale down.
+#   ~2B  / ~4B  → full 262K (model tiny, lots of room)
+#   ~7B  / ~8B  → 128K
+#   ~14B / ~13B → 64K
+#   ~27B / ~31B / ~34B → 32K  (e.g. Gemma 4 31B: 18GB model + ~4GB KV = 22GB)
+#   ~70B / ~72B → 32K  (model alone ~40GB, leave room for KV)
+#   ~122B / MoE giants → 16K  (model ~72GB, tight even on GPU)
+# Patterns use [-/_] separators to avoid e.g. *1B* matching "31B".
+# ---------------------------------------------------------------------------
+get_ctx_size() {
+    local model="$1"
+    case "$model" in
+        # MoE / very large — check active-param tags first
+        *A10B*|*A14B*|*A4B*|*122B*|*123B*|*110B*)           echo  16384 ;;
+        # ~70B dense
+        *[-/_]70B*|*[-/_]72B*|*[-/_]65B*)                   echo  32768 ;;
+        # ~27–34B dense (includes Gemma 4 31B)
+        *[-/_]27B*|*[-/_]30B*|*[-/_]31B*|*[-/_]32B*|*[-/_]34B*)  echo  32768 ;;
+        # ~12–14B
+        *[-/_]12B*|*[-/_]13B*|*[-/_]14B*)                   echo  65536 ;;
+        # ~7–8B and small multimodal (E4B)
+        *[-/_]7B*|*[-/_]8B*|*E4B*|*[-/_]4B*)                echo 131072 ;;
+        # ≤3B and small multimodal (E2B)
+        *E2B*|*[-/_]1B*|*[-/_]2B*|*[-/_]3B*)                echo 262144 ;;
+        # Unknown — conservative default
+        *)                                                    echo  32768 ;;
+    esac
+}
+
 # Default to local if RAMALAMA_HOST is not set
 REMOTE_HOST="${RAMALAMA_HOST:-}"
 
@@ -225,6 +258,7 @@ configure_opencode() {
         --arg name   "$model_display" \
         --arg base   "$base_url" \
         --arg full   "ramalama/${model_id}" \
+        --argjson ctx "$CTX_SIZE" \
         '
         .model = $full |
         .provider.ramalama = {
@@ -235,7 +269,7 @@ configure_opencode() {
             ($key): {
               "_launch": true,
               "name": $name,
-              "limit": { "context": 262144, "output": 8192 }
+              "limit": { "context": $ctx, "output": 8192 }
             }
           }
         }
@@ -397,6 +431,9 @@ if ! is_ramalama_running; then
     MODEL_SIZE_GB=$(( MODEL_SIZE_BYTES / 1024 / 1024 / 1024 ))
     REQUIRED_GB=$(( MODEL_SIZE_GB + 4 ))
 
+    CTX_SIZE=$(get_ctx_size "$SELECTED_MODEL")
+    echo "📐 Context window for ${SELECTED_MODEL}: ${CTX_SIZE} tokens"
+
     # --- Memory gate: check against GTT TOTAL (BIOS-allocated GPU pool, e.g. 96GB) ---
     # We use total, not available, because llama.cpp manages its own allocation.
     detect_gtt
@@ -417,10 +454,11 @@ if ! is_ramalama_running; then
     check_resources "$REQUIRED_GB"
 
     echo "🚀 Starting RamaLama (Vulkan) with ${SELECTED_MODEL}..."
-    # --runtime-args "--jinja": Gemma 4 (and other models with complex chat templates)
-    # require full Jinja2 template support in llama-server; without it the server exits
-    # with "chat template parsing error".
-    dry_run_cmd "run_cmd 'ramalama serve --detach --name ${CONTAINER_NAME} --image ${STRIX_IMAGE} --runtime-args=--jinja ${SELECTED_MODEL}'"
+    # --runtime-args: --jinja needed for Gemma 4's complex chat template.
+    # --parallel 1: single inference slot — local single-user setup, halves KV cache vs default 4.
+    # --cache-ram 0: disable the 8GB prompt cache that sits in system RAM (only 31GB total).
+    # -c ${CTX_SIZE}: 32K context keeps KV + compute buffers from OOM-killing llama-server.
+    dry_run_cmd "run_cmd 'ramalama serve --detach --name ${CONTAINER_NAME} --image ${STRIX_IMAGE} -c ${CTX_SIZE} --runtime-args=\"--jinja --parallel 1 --cache-ram 0\" ${SELECTED_MODEL}'"
 
     # Important: Give podman a second to map the ports before detecting
     sleep 2
@@ -468,6 +506,7 @@ else
     else
         SERVED_MODEL_ID="${CLI_MODEL:-dry-run-model}"
     fi
+    CTX_SIZE=$(get_ctx_size "$SELECTED_MODEL")
 fi
 
 # 3. Tool Execution
