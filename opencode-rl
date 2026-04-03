@@ -417,7 +417,10 @@ if ! is_ramalama_running; then
     check_resources "$REQUIRED_GB"
 
     echo "🚀 Starting RamaLama (Vulkan) with ${SELECTED_MODEL}..."
-    dry_run_cmd "run_cmd 'ramalama serve --detach --name ${CONTAINER_NAME} --image ${STRIX_IMAGE} ${SELECTED_MODEL}'"
+    # --runtime-args "--jinja": Gemma 4 (and other models with complex chat templates)
+    # require full Jinja2 template support in llama-server; without it the server exits
+    # with "chat template parsing error".
+    dry_run_cmd "run_cmd 'ramalama serve --detach --name ${CONTAINER_NAME} --image ${STRIX_IMAGE} --runtime-args=--jinja ${SELECTED_MODEL}'"
 
     # Important: Give podman a second to map the ports before detecting
     sleep 2
