@@ -652,6 +652,99 @@ cmd_rm() {
 }
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# SSH helpers for remote model management
+# ---------------------------------------------------------------------------
+
+# _resolve_ssh_host <ip>: find a working SSH hostname for an IP.
+# Checks Tailscale MagicDNS (short name then full), then raw IP.
+# Prints the hostname on success; prints nothing on failure.
+_resolve_ssh_host() {
+    local ip="$1"
+    local candidates=()
+
+    # Try Tailscale MagicDNS lookup
+    if command -v tailscale &>/dev/null; then
+        local dns
+        dns=$(tailscale status --json 2>/dev/null \
+            | jq -r --arg ip "$ip" \
+              '.Peer[] | select(.TailscaleIPs[] == $ip) | .DNSName' \
+              2>/dev/null | head -1 | sed 's/\.$//')
+        [ -n "$dns" ] && candidates+=("${dns%%.*}" "$dns")
+    fi
+    candidates+=("$ip")
+
+    for host in "${candidates[@]}"; do
+        if ssh -o ConnectTimeout=3 -o BatchMode=yes \
+               -o StrictHostKeyChecking=no "$host" \
+               bash -l -c true 2>/dev/null; then
+            echo "$host"
+            return 0
+        fi
+    done
+}
+
+# _remote_list_models <ssh_host>: list models available on a remote machine.
+# Prints a JSON array compatible with get_models_json output.
+_remote_list_models() {
+    local host="$1"
+    ssh -o ConnectTimeout=5 "$host" bash -l -c \
+        "'command -v oramalama &>/dev/null \
+             && oramalama list --json 2>/dev/null \
+             || ramalama list --json 2>/dev/null'" 2>/dev/null
+}
+
+# _remote_switch_model <ssh_host> <model>: stop the current server on the
+# remote and start a new one. Polls REMOTE_ENDPOINT until healthy again.
+# Updates SERVED_MODEL_ID global on success.
+_remote_switch_model() {
+    local host="$1"
+    local model="$2"
+
+    gum style --foreground 212 "🔄 Switching remote model → ${model}..."
+
+    # Prefer oramalama stop for a clean shutdown; fall back to raw ramalama
+    if ssh -o ConnectTimeout=5 "$host" bash -l -c \
+           "'command -v oramalama &>/dev/null'" 2>/dev/null; then
+        ssh "$host" bash -l -c \
+            "'oramalama stop 2>/dev/null || true
+              sleep 2
+              ramalama serve --detach --name ramalama-opencode \"${model}\" 2>&1'" &
+    else
+        ssh "$host" bash -l -c \
+            "'ramalama ps --noheading 2>/dev/null \
+                | awk \"{print \\\$1}\" \
+                | while read -r c; do ramalama stop \"\$c\" 2>/dev/null || true; done
+              systemctl --user stop ramalama-opencode.service 2>/dev/null || true
+              sleep 2
+              ramalama serve --detach --name ramalama-opencode \"${model}\" 2>&1'" &
+    fi
+    local bg_pid=$!
+
+    # Poll until the remote server is healthy again (max 90 s)
+    local spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' spin_i=0 waited=0
+    while [ $waited -lt 90 ]; do
+        sleep 2; (( waited += 2 )) || true
+        if curl -sf --max-time 2 "${REMOTE_ENDPOINT}/health" >/dev/null 2>&1; then
+            printf "\r                                         \r"
+            kill "$bg_pid" 2>/dev/null; wait "$bg_pid" 2>/dev/null
+            local live_model
+            live_model=$(curl -s --max-time 3 "${REMOTE_ENDPOINT}/v1/models" \
+                | jq -r '.data[0].id' 2>/dev/null)
+            SERVED_MODEL_ID="${live_model:-$model}"
+            gum style --foreground 121 "✅ Remote model → ${SERVED_MODEL_ID}"
+            return 0
+        fi
+        printf "\r  %s  Waiting for remote server... %ds" \
+               "${spin:$((spin_i % ${#spin})):1}" "$waited"
+        (( spin_i++ )) || true
+    done
+    printf "\r                                          \r"
+    kill "$bg_pid" 2>/dev/null; wait "$bg_pid" 2>/dev/null
+    gum style --foreground 196 "❌ Timed out waiting for remote server to come back."
+    return 1
+}
+
 # cmd_discover: scan Tailscale peers + local /24 subnet for ramalama servers.
 # On success: sets REMOTE_ENDPOINT global and returns 0.
 # On cancel/no results: returns 1.
@@ -804,6 +897,45 @@ cmd_discover() {
     REMOTE_ENDPOINT="${chosen%%  *}"
     export REMOTE_ENDPOINT
     gum style --foreground 121 "✅ Connected → ${REMOTE_ENDPOINT}"
+
+    # ── Try to resolve SSH access for the remote machine ─────────────────────
+    local remote_ip
+    remote_ip=$(echo "$REMOTE_ENDPOINT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
+    REMOTE_SSH_HOST=""
+    if [ -n "$remote_ip" ]; then
+        local resolved
+        printf "  🔑 Checking SSH access..."
+        resolved=$(_resolve_ssh_host "$remote_ip")
+        printf "\r                            \r"
+        if [ -n "$resolved" ]; then
+            REMOTE_SSH_HOST="$resolved"
+            gum style --foreground 245 "  🔑 SSH available via: ${REMOTE_SSH_HOST}"
+        fi
+    fi
+
+    # If SSH is available, offer to switch the remote model before connecting
+    if [ -n "$REMOTE_SSH_HOST" ]; then
+        local current_model
+        current_model=$(curl -s --max-time 3 "${REMOTE_ENDPOINT}/v1/models" \
+            | jq -r '.data[0].id' 2>/dev/null || echo "unknown")
+        local action
+        action=$(printf "Connect (current model: %s)\nSwitch model on remote...\n" \
+                        "$current_model" \
+                 | gum choose --header "Remote: ${REMOTE_ENDPOINT}") || true
+        if [[ "$action" == "Switch model"* ]]; then
+            local remote_json remote_names
+            remote_json=$(_remote_list_models "$REMOTE_SSH_HOST")
+            remote_names=$(echo "$remote_json" | jq -r '.[].name // empty' 2>/dev/null)
+            if [ -z "$remote_names" ]; then
+                gum style --foreground 196 "❌ No models found on remote (is ramalama installed?)"
+            else
+                local new_model
+                new_model=$(echo "$remote_names" \
+                    | gum choose --header "Select model to run on ${REMOTE_SSH_HOST}:") || true
+                [ -n "$new_model" ] && _remote_switch_model "$REMOTE_SSH_HOST" "$new_model"
+            fi
+        fi
+    fi
 
     # When invoked as `oramalama discover`, drop straight into the REPL
     [[ "$standalone" == "true" ]] && cmd_run
@@ -972,6 +1104,7 @@ cmd_run() {
   /save <name>            Save session to ~/.config/oramalama/sessions/<name>
   /load <name>            Load a saved session
   /show                   Print current model, system prompt, params
+  /switch                 Switch the running model (local or remote via SSH)
   /bye                    Exit
 HELP
                 continue ;;
@@ -1028,8 +1161,55 @@ HELP
                 echo "Model   : ${SERVED_MODEL_ID}"
                 echo "Context : ${CTX_SIZE} tokens"
                 echo "Endpoint: ${ENDPOINT}"
+                [ -n "$REMOTE_SSH_HOST" ] && echo "SSH     : ${REMOTE_SSH_HOST}"
                 echo "System  : ${system_prompt:-<none>}"
                 echo "Params  : $(cat "$params_file")"
+                continue ;;
+
+            /switch)
+                local switch_names switch_json switch_model
+                if [ -n "$REMOTE_SSH_HOST" ]; then
+                    echo "📋 Listing models on ${REMOTE_SSH_HOST}..."
+                    switch_json=$(_remote_list_models "$REMOTE_SSH_HOST")
+                    switch_names=$(echo "$switch_json" | jq -r '.[].name // empty' 2>/dev/null)
+                    if [ -z "$switch_names" ]; then
+                        echo "❌ No models found on ${REMOTE_SSH_HOST}"
+                        continue
+                    fi
+                    switch_model=$(echo "$switch_names" \
+                        | gum choose --header "Switch model on ${REMOTE_SSH_HOST}:") || { continue; }
+                    [ -n "$switch_model" ] && \
+                        _remote_switch_model "$REMOTE_SSH_HOST" "$switch_model"
+                else
+                    # Local switch
+                    switch_json=$(get_models_json)
+                    switch_names=$(echo "$switch_json" | jq -r '.[].name // empty' 2>/dev/null)
+                    if [ -z "$switch_names" ]; then
+                        echo "❌ No local models found"
+                        continue
+                    fi
+                    switch_model=$(echo "$switch_names" \
+                        | gum choose --header "Switch model:") || { continue; }
+                    if [ -n "$switch_model" ] && [[ "$switch_model" != "$SERVED_MODEL_ID" ]]; then
+                        gum style --foreground 212 \
+                            "🔄 Switching: ${SERVED_MODEL_ID} → ${switch_model}"
+                        if systemctl --user is-active --quiet "$QUADLET_SERVICE" 2>/dev/null; then
+                            systemctl --user stop "$QUADLET_SERVICE"
+                        else
+                            ramalama stop "$CONTAINER_NAME" 2>/dev/null || true
+                        fi
+                        sleep 2
+                        ramalama serve --detach --name "$CONTAINER_NAME" "$switch_model"
+                        wait_for_server "$ENDPOINT"
+                        local new_id
+                        new_id=$(get_model_id_from_endpoint "$ENDPOINT")
+                        SERVED_MODEL_ID="${new_id:-$switch_model}"
+                        # Clear history — different model, fresh context
+                        echo "[]" > "$msgs_file"; echo "{}" > "$params_file"
+                        system_prompt="" in_think=false
+                        gum style --foreground 121 "✅ Now using: ${SERVED_MODEL_ID}"
+                    fi
+                fi
                 continue ;;
         esac
 
@@ -1567,6 +1747,7 @@ SUBCOMMAND="launch"   # default
 DRY_RUN=false
 CLI_MODEL=""
 CLI_TOOL=""
+REMOTE_SSH_HOST=""
 REMOTE_ENDPOINT="${RAMALAMA_ENDPOINT:-}"
 
 while [[ $# -gt 0 ]]; do
