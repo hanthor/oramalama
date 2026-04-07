@@ -11,6 +11,10 @@ GOOSE_CONFIG="${HOME}/.config/goose/config.yaml"
 # Default model: Gemma 4 31B (dense, best coding quality) at Q4_K_M quant (~18GB, fits Strix Halo 96GB pool)
 DEFAULT_MODEL="hf://unsloth/gemma-4-31B-it-GGUF:Q4_K_M"
 
+# Systemd quadlet service name for the default model (persistent, auto-restart).
+# Other models still use ad-hoc ramalama serve.
+QUADLET_SERVICE="ramalama-opencode.service"
+
 # ---------------------------------------------------------------------------
 # get_ctx_size: return an appropriate context window for a given model name.
 # Strix Halo has ~113GB GPU pool but only ~31GB system RAM. KV cache lives on
@@ -43,9 +47,6 @@ get_ctx_size() {
         *)                                                    echo  32768 ;;
     esac
 }
-
-# Default to local if RAMALAMA_HOST is not set
-REMOTE_HOST="${RAMALAMA_HOST:-}"
 
 # ---------------------------------------------------------------------------
 # CLI flags — allow fully non-interactive operation
@@ -114,8 +115,12 @@ get_models_json() {
     run_cmd "ramalama list --json"
 }
 
-# Function to check if ramalama is running with the correct image
+# Function to check if ramalama is running with the correct image.
+# For the default model, also considers the quadlet systemd service.
 is_ramalama_running() {
+    if [[ "$SELECTED_MODEL" == "$DEFAULT_MODEL" ]]; then
+        systemctl --user is-active --quiet "$QUADLET_SERVICE" && return 0
+    fi
     run_cmd "ramalama ps --noheading" | grep "${CONTAINER_NAME}" | grep -q "${STRIX_IMAGE}"
 }
 
@@ -454,11 +459,17 @@ if ! is_ramalama_running; then
     check_resources "$REQUIRED_GB"
 
     echo "🚀 Starting RamaLama (Vulkan) with ${SELECTED_MODEL}..."
-    # --runtime-args: --jinja needed for Gemma 4's complex chat template.
-    # --parallel 1: single inference slot — local single-user setup, halves KV cache vs default 4.
-    # --cache-ram 0: disable the 8GB prompt cache that sits in system RAM (only 31GB total).
-    # -c ${CTX_SIZE}: 32K context keeps KV + compute buffers from OOM-killing llama-server.
-    dry_run_cmd "run_cmd 'ramalama serve --detach --name ${CONTAINER_NAME} --image ${STRIX_IMAGE} -c ${CTX_SIZE} --runtime-args=\"--jinja --parallel 1 --cache-ram 0\" ${SELECTED_MODEL}'"
+    if [[ "$SELECTED_MODEL" == "$DEFAULT_MODEL" ]] && systemctl --user list-unit-files --quiet "$QUADLET_SERVICE" &>/dev/null; then
+        # Use the persistent quadlet service for the default model so it survives
+        # tool exits and auto-restarts after OOM kills.
+        dry_run_cmd "systemctl --user start '${QUADLET_SERVICE}'"
+    else
+        # --runtime-args: --jinja needed for Gemma 4's complex chat template.
+        # --parallel 1: single inference slot — local single-user setup, halves KV cache vs default 4.
+        # --cache-ram 0: disable the 8GB prompt cache that sits in system RAM (only 31GB total).
+        # -c ${CTX_SIZE}: context size keeps KV + compute buffers from OOM-killing llama-server.
+        dry_run_cmd "run_cmd 'ramalama serve --detach --name ${CONTAINER_NAME} --image ${STRIX_IMAGE} -c ${CTX_SIZE} --runtime-args=\"--jinja --parallel 1 --cache-ram 0\" ${SELECTED_MODEL}'"
+    fi
 
     # Important: Give podman a second to map the ports before detecting
     sleep 2
@@ -528,11 +539,16 @@ case "$SELECTED_TOOL" in
         ;;
 esac
 
-# Cleanup: stop server when last tool instance exits (local only)
+# Cleanup: stop server when last tool instance exits (local only).
+# Skip if the container is managed by systemd — let the service keep running.
 if [ -z "$REMOTE_HOST" ]; then
     sleep 1
     if ! pgrep -f "bin/opencode|goose|claude|copilot" > /dev/null; then
-        echo "💤 Last instance closed. Stopping RamaLama..."
-        dry_run_cmd "ramalama stop '${CONTAINER_NAME}'"
+        if systemctl --user is-active --quiet "$QUADLET_SERVICE" 2>/dev/null; then
+            echo "💤 Last instance closed. Leaving systemd service running (use: systemctl --user stop ${QUADLET_SERVICE})"
+        else
+            echo "💤 Last instance closed. Stopping RamaLama..."
+            dry_run_cmd "ramalama stop '${CONTAINER_NAME}'"
+        fi
     fi
 fi
