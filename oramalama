@@ -364,10 +364,10 @@ _llmfit_resolve_name() {
     local base="${stripped##*/}"
     local info
     for candidate in \
-            "$stripped" \
-            "${stripped%-GGUF}" \
+            "${base%-GGUF}" \
             "$base" \
-            "${base%-GGUF}" ; do
+            "${stripped%-GGUF}" \
+            "$stripped" ; do
         [ -z "$candidate" ] && continue
         info=$(llmfit info "$candidate" --json 2>/dev/null)
         if echo "$info" | jq -e '.models[0]' >/dev/null 2>&1; then
@@ -488,11 +488,11 @@ pick_model() {
             short_name=$(echo "$selected_model" | sed 's|hf://[^/]*/||; s|:.*||')
             local action=""
             while [[ "$action" != "▶"* ]]; do
-                # Show info panel first if user just came from "ℹ️"
+                # Show info panel if user just came from "ℹ️"
                 [[ "$action" == "ℹ️"* ]] && _show_llmfit_panel "$selected_model"
                 action=$(printf "▶  Use: %s\nℹ️  Model info (llmfit)\n←  Back to model list\n" \
                                 "$short_name" \
-                         | gum choose --header "$(gum style --foreground 212 "Selected: ${short_name}")") || return 1
+                         | gum choose --header "Selected: ${short_name}") || action="←"
                 [[ "$action" == "←"* ]] && break  # go back to outer list loop
             done
             [[ "$action" == "←"* ]] && continue  # re-show the model list
