@@ -724,7 +724,18 @@ cmd_show() {
 }
 
 cmd_run() {
-    local model="${1:-$CLI_MODEL}"
+    local THINK=false HIDETHINKING=false VERBOSE=false
+    local model="${CLI_MODEL:-}"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --think)        THINK=true;        shift ;;
+            --hidethinking) HIDETHINKING=true; shift ;;
+            --verbose)      VERBOSE=true;      shift ;;
+            --*)            echo "Unknown flag: $1"; usage ;;
+            *)              model="$1"; shift ;;
+        esac
+    done
 
     if [ -z "$model" ]; then
         local models_json model_names
@@ -737,20 +748,209 @@ cmd_run() {
         model=$(pick_model "Select a model to chat with" "$models_json") || exit 0
     fi
 
-    if [ -z "$REMOTE_ENDPOINT" ]; then
-        if ! ramalama list --json 2>/dev/null | jq -r '.[].name' | grep -qF "$model"; then
-            gum confirm "Model not found locally. Pull ${model}?" || exit 0
-            ramalama pull "$model" || exit 1
-        fi
-        local ctx image_flag
-        ctx=$(get_ctx_size "$model")
-        image_flag=""
-        [ -n "$USE_IMAGE" ] && image_flag="--image ${USE_IMAGE}"
-        echo "💬 Starting chat with ${model}..."
-        dry_run_cmd "ramalama run ${image_flag} -c ${ctx} --runtime-args=\"${EXTRA_SERVE_FLAGS}\" '${model}'"
-    else
-        echo "ℹ️  For remote servers, use the endpoint directly: ${REMOTE_ENDPOINT}/v1"
+    if $DRY_RUN; then
+        local flags=""
+        $THINK        && flags+=" --think"
+        $HIDETHINKING && flags+=" --hidethinking"
+        $VERBOSE      && flags+=" --verbose"
+        echo "[dry-run] oramalama run${flags} ${model}"
+        return
     fi
+
+    # Start server (sets ENDPOINT, SERVED_MODEL_ID, CTX_SIZE)
+    CLI_MODEL="$model"
+    ensure_server_running
+
+    # ── Session state ────────────────────────────────────────────────────────
+    local msgs_file params_file
+    msgs_file=$(mktemp --suffix=.json)
+    params_file=$(mktemp --suffix=.json)
+    echo "[]" > "$msgs_file"
+    echo "{}"  > "$params_file"
+    local system_prompt="" in_think=false
+    trap 'rm -f "$msgs_file" "$params_file"' EXIT INT TERM
+
+    gum style \
+        --border normal --padding "0 1" --border-foreground 212 \
+        "$(gum style --bold --foreground 212 "oramalama run") ─ ${SERVED_MODEL_ID}" \
+        "Slash commands: /help   Exit: /bye or Ctrl-C"
+
+    # ── REPL loop ────────────────────────────────────────────────────────────
+    while true; do
+        local user_input
+        read -e -r -p $'\033[38;5;212m>>> \033[0m' user_input || break
+        [ -z "$user_input" ] && continue
+        history -s "$user_input"
+
+        # ── Slash commands ────────────────────────────────────────────────────
+        case "$user_input" in
+            /bye|/quit|/exit) break ;;
+
+            /help)
+                cat <<'HELP'
+  /set system <text>       Set the system prompt  (/set system  to clear)
+  /set parameter <k> <v>  Set a generation param  (temperature, top_p, …)
+  /clear                  Wipe conversation history
+  /save <name>            Save session to ~/.config/oramalama/sessions/<name>
+  /load <name>            Load a saved session
+  /show                   Print current model, system prompt, params
+  /bye                    Exit
+HELP
+                continue ;;
+
+            /clear)
+                echo "[]" > "$msgs_file"
+                echo "{}"  > "$params_file"
+                system_prompt="" in_think=false
+                echo "🗑️  Cleared."
+                continue ;;
+
+            "/set system")
+                system_prompt=""
+                echo "✅ System prompt cleared."
+                continue ;;
+            "/set system "*)
+                system_prompt="${user_input#/set system }"
+                echo "✅ System prompt set."
+                continue ;;
+
+            "/set parameter "*)
+                local kv="${user_input#/set parameter }"
+                local pk="${kv%% *}" pv="${kv#* }"
+                local tmp_p; tmp_p=$(mktemp --suffix=.json)
+                jq --arg k "$pk" \
+                   --argjson v "$(jq -rn --arg v "$pv" '$v | tonumber? // .' 2>/dev/null || echo "\"$pv\"")" \
+                   '.[$k] = $v' "$params_file" > "$tmp_p" \
+                    && mv "$tmp_p" "$params_file" \
+                    || echo "⚠️  Could not parse value: ${pv}"
+                echo "✅ ${pk} = ${pv}"
+                continue ;;
+
+            "/save "*)
+                local sname="${user_input#/save }"
+                local sdir="$HOME/.config/oramalama/sessions"
+                mkdir -p "$sdir"
+                cp "$msgs_file" "${sdir}/${sname}.json"
+                echo "💾 Saved → ${sdir}/${sname}.json"
+                continue ;;
+
+            "/load "*)
+                local lname="${user_input#/load }"
+                local lfile="$HOME/.config/oramalama/sessions/${lname}.json"
+                if [ -f "$lfile" ]; then
+                    cp "$lfile" "$msgs_file"
+                    in_think=false
+                    echo "📂 Loaded ${lname}."
+                else
+                    echo "❌ Not found: ${lfile}"
+                fi
+                continue ;;
+
+            /show)
+                echo "Model   : ${SERVED_MODEL_ID}"
+                echo "Context : ${CTX_SIZE} tokens"
+                echo "Endpoint: ${ENDPOINT}"
+                echo "System  : ${system_prompt:-<none>}"
+                echo "Params  : $(cat "$params_file")"
+                continue ;;
+        esac
+
+        # ── Build request ────────────────────────────────────────────────────
+        local messages
+        messages=$(cat "$msgs_file")
+        messages=$(jq --arg c "$user_input" '. + [{"role":"user","content":$c}]' <<< "$messages")
+
+        local request
+        request=$(jq -n \
+            --arg     model   "$SERVED_MODEL_ID" \
+            --argjson msgs    "$messages" \
+            --argjson params  "$(cat "$params_file")" \
+            --argjson think   "$THINK" \
+            '$params + {model: $model, stream: true, messages: $msgs} |
+             if $think then . + {thinking: true} else . end')
+        if [ -n "$system_prompt" ]; then
+            request=$(jq --arg sys "$system_prompt" \
+                '.messages = [{"role":"system","content":$sys}] + .messages' <<< "$request")
+        fi
+
+        # ── Stream response ──────────────────────────────────────────────────
+        local full_response="" tok_per_sec="" prompt_n="" predicted_n=""
+        in_think=false
+        printf '\n'
+
+        while IFS= read -r sse_line; do
+            [[ "$sse_line" == "data: [DONE]" ]] && break
+            [[ "$sse_line" != "data: "* ]]      && continue
+            local chunk="${sse_line#data: }"
+
+            # Reasoning/thinking delta (Gemma 4 / DeepSeek-R1 reasoning_content field)
+            local rdelta
+            rdelta=$(jq -r '.choices[0].delta.reasoning_content // empty' <<< "$chunk" 2>/dev/null)
+            if [ -n "$rdelta" ] && ! $HIDETHINKING; then
+                printf '\033[2m%s\033[0m' "$rdelta"
+            fi
+
+            # Content delta — also handles inline <think>…</think> blocks
+            local cdelta
+            cdelta=$(jq -r '.choices[0].delta.content // empty' <<< "$chunk" 2>/dev/null)
+            if [ -n "$cdelta" ]; then
+                if $HIDETHINKING; then
+                    # State-machine: strip <think>…</think> that may span chunks
+                    local rest="$cdelta"
+                    while [ -n "$rest" ]; do
+                        if $in_think; then
+                            if [[ "$rest" == *"</think>"* ]]; then
+                                in_think=false
+                                rest="${rest#*</think>}"
+                            else
+                                rest=""
+                            fi
+                        else
+                            if [[ "$rest" == *"<think>"* ]]; then
+                                local visible="${rest%%<think>*}"
+                                printf '%s' "$visible"
+                                full_response+="$visible"
+                                in_think=true
+                                rest="${rest#*<think>}"
+                            else
+                                printf '%s' "$rest"
+                                full_response+="$rest"
+                                rest=""
+                            fi
+                        fi
+                    done
+                else
+                    printf '%s' "$cdelta"
+                    full_response+="$cdelta"
+                fi
+            fi
+
+            # Timings are in the final (finish_reason) chunk
+            local raw_tps
+            raw_tps=$(jq -r '.timings.predicted_per_second // empty' <<< "$chunk" 2>/dev/null)
+            if [ -n "$raw_tps" ]; then
+                tok_per_sec="$raw_tps"
+                prompt_n=$(jq -r    '.timings.prompt_n    // 0' <<< "$chunk" 2>/dev/null)
+                predicted_n=$(jq -r '.timings.predicted_n // 0' <<< "$chunk" 2>/dev/null)
+            fi
+        done < <(curl -sN \
+            -H "Content-Type: application/json" \
+            -d "$request" \
+            "${ENDPOINT}/v1/chat/completions" 2>/dev/null)
+
+        printf '\n'
+        if $VERBOSE && [ -n "$tok_per_sec" ]; then
+            printf '\033[2m📊 %.1f tok/s  ·  %s prompt tokens  ·  %s generated\033[0m\n' \
+                "$tok_per_sec" "$prompt_n" "$predicted_n"
+        fi
+        printf '\n'
+
+        # Append assistant turn to history
+        messages=$(jq --arg c "$full_response" '. + [{"role":"assistant","content":$c}]' <<< "$messages")
+        echo "$messages" > "$msgs_file"
+    done
+
+    rm -f "$msgs_file" "$params_file"
 }
 
 cmd_serve() {
@@ -975,7 +1175,10 @@ usage() {
 Usage: oramalama [--remote <url>] [--model <name>] [--dry-run] <subcommand> [args]
 
 Subcommands:
-  run [model]        Start interactive chat (pulls model if needed)
+  run [model]        Interactive chat REPL (starts server if needed)
+                       --think          Show model reasoning/thinking
+                       --hidethinking   Hide <think> blocks from output
+                       --verbose        Print tok/s stats after each reply
   serve [model]      Start the inference server (detached)
   launch             Start server + launch a coding tool (opencode, goose)
   list               List downloaded models
