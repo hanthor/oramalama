@@ -4,7 +4,7 @@ _oramalama_complete() {
     local cur prev words cword
     _init_completion || return
 
-    local subcommands="run serve launch list ls pull ps stop show rm search help"
+    local subcommands="run serve launch list ls pull ps stop show rm search discover help"
     local global_flags="--remote --model --dry-run --help"
 
     # If no subcommand yet, complete subcommands + global flags
@@ -28,6 +28,9 @@ _oramalama_complete() {
                 models=$(ramalama list --json 2>/dev/null | jq -r '.[].name' 2>/dev/null)
                 COMPREPLY=($(compgen -W "$models" -- "$cur"))
             fi
+            ;;
+        discover)
+            # No sub-options
             ;;
         launch)
             case "$prev" in

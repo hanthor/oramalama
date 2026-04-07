@@ -13,6 +13,7 @@ _oramalama() {
         'show:Show model metadata (arch, quant, size, context)'
         'rm:Remove a model'
         'search:Search and recommend models'
+        'discover:Scan local network and Tailscale for ramalama servers'
     )
 
     local -a global_opts
@@ -42,6 +43,9 @@ _oramalama() {
                             ;;
                         launch)
                             _arguments '--tool[Tool to launch]:(opencode goose vscode aichat tgpt webui open-webui anythingllm nextchat lobe-chat big-agi server)'
+                            ;;
+                        discover)
+                            # no sub-args
                             ;;
                     esac
                     ;;

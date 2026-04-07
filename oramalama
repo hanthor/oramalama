@@ -22,6 +22,9 @@ DEFAULT_MODEL="hf://unsloth/gemma-4-31B-it-GGUF:Q4_K_M"
 # Other models still use ad-hoc ramalama serve.
 QUADLET_SERVICE="ramalama-opencode.service"
 
+# Ports probed when scanning for remote ramalama / Ollama servers.
+DISCOVER_PORTS=(8080 11434 8081)
+
 # ---------------------------------------------------------------------------
 # User config file: ~/.config/oramalama/config
 # Loaded before CLI flags so flags always win. Supported keys (bash syntax):
@@ -378,6 +381,19 @@ ensure_server_running() {
         if [ -n "$REMOTE_ENDPOINT" ]; then
             echo "❌ Remote endpoint ${REMOTE_ENDPOINT} not healthy." && exit 1
         fi
+
+        # No local server and no --remote: offer to scan the network first
+        if ! $DRY_RUN && gum confirm \
+            "No local ramalama server running. Scan network for a remote server?" \
+            --default=no 2>/dev/null; then
+            if cmd_discover; then
+                # Discovery set REMOTE_ENDPOINT — restart ensure_server_running on the remote path
+                ensure_server_running
+                return
+            fi
+            echo "ℹ️  No remote server selected — starting local server."
+        fi
+
         if run_cmd "ramalama ps --noheading" | grep -q "${CONTAINER_NAME}"; then
             gum style --foreground 212 "🔄 Restarting RamaLama with optimized Strix Halo toolbox..."
             run_cmd "ramalama stop ${CONTAINER_NAME}"
@@ -633,6 +649,130 @@ cmd_rm() {
     gum confirm "Remove ${model}?" || return
     dry_run_cmd "ramalama rm '${model}'" && \
         gum style --foreground 121 "✅ Removed ${model}"
+}
+
+# ---------------------------------------------------------------------------
+# cmd_discover: scan Tailscale peers + local /24 subnet for ramalama servers.
+# On success: sets REMOTE_ENDPOINT global and returns 0.
+# On cancel/no results: returns 1.
+# When called as a standalone subcommand (standalone=true), drops into cmd_run.
+# ---------------------------------------------------------------------------
+cmd_discover() {
+    local standalone="${1:-false}"
+
+    local results_file
+    results_file=$(mktemp /tmp/oramalama-discover.XXXXXX)
+
+    gum style --bold "🔍 Scanning for ramalama servers..."
+    printf "   Ports: %s\n" "${DISCOVER_PORTS[*]}"
+
+    # ── Tailscale peers ──────────────────────────────────────────────────────
+    if command -v tailscale &>/dev/null; then
+        local ts_peers
+        ts_peers=$(tailscale status --json 2>/dev/null \
+            | jq -r '.Peer[] | select(.Online==true) | .TailscaleIPs[0]' 2>/dev/null || true)
+        while IFS= read -r ip; do
+            [ -z "$ip" ] && continue
+            for port in "${DISCOVER_PORTS[@]}"; do
+                (
+                    if curl -sf --max-time 2 "http://${ip}:${port}/health" >/dev/null 2>&1 || \
+                       curl -sf --max-time 2 "http://${ip}:${port}/v1/models" >/dev/null 2>&1; then
+                        echo "http://${ip}:${port}" >> "$results_file"
+                    fi
+                ) &
+            done
+        done <<< "$ts_peers"
+    fi
+
+    # ── Local /24 subnet ────────────────────────────────────────────────────
+    local local_ip subnet
+    local_ip=$(ip -4 route get 1.1.1.1 2>/dev/null \
+        | awk '{for(i=1;i<=NF;i++) if ($i=="src") {print $(i+1); exit}}')
+
+    if [ -n "$local_ip" ]; then
+        subnet=$(echo "$local_ip" | cut -d. -f1-3)
+
+        if command -v nmap &>/dev/null; then
+            # nmap: fast open-port detection, then confirm with curl
+            local ports_str
+            ports_str=$(IFS=,; echo "${DISCOVER_PORTS[*]}")
+            while IFS= read -r ip; do
+                [ -z "$ip" ] && continue
+                for port in "${DISCOVER_PORTS[@]}"; do
+                    (
+                        if curl -sf --max-time 2 "http://${ip}:${port}/health" >/dev/null 2>&1 || \
+                           curl -sf --max-time 2 "http://${ip}:${port}/v1/models" >/dev/null 2>&1; then
+                            echo "http://${ip}:${port}" >> "$results_file"
+                        fi
+                    ) &
+                done
+            done < <(nmap -p "$ports_str" --open -T4 -oG - "${subnet}.0/24" 2>/dev/null \
+                     | awk '/^Host:/{print $2}')
+        else
+            # Pure-curl fallback: probe all 254 hosts in parallel (2 s timeout each)
+            for i in $(seq 1 254); do
+                local host_ip="${subnet}.${i}"
+                for port in "${DISCOVER_PORTS[@]}"; do
+                    (
+                        if curl -sf --max-time 2 "http://${host_ip}:${port}/health" >/dev/null 2>&1 || \
+                           curl -sf --max-time 2 "http://${host_ip}:${port}/v1/models" >/dev/null 2>&1; then
+                            echo "http://${host_ip}:${port}" >> "$results_file"
+                        fi
+                    ) &
+                done
+            done
+        fi
+    fi
+
+    # ── Spinner while background probes finish ───────────────────────────────
+    local spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+    local spin_i=0
+    while jobs -r 2>/dev/null | grep -q .; do
+        printf "\r  %s  Probing..." "${spin:$((spin_i % ${#spin})):1}"
+        sleep 0.1
+        (( spin_i++ )) || true
+    done
+    printf "\r                              \r"
+    wait 2>/dev/null
+
+    # ── Collect & deduplicate ────────────────────────────────────────────────
+    local endpoints=()
+    if [ -s "$results_file" ]; then
+        while IFS= read -r ep; do
+            [ -n "$ep" ] && endpoints+=("$ep")
+        done < <(sort -u "$results_file")
+    fi
+    rm -f "$results_file"
+
+    if [ ${#endpoints[@]} -eq 0 ]; then
+        gum style --foreground 196 "❌ No ramalama servers found on local network or Tailscale."
+        return 1
+    fi
+
+    # ── Enrich each endpoint with its loaded model list ──────────────────────
+    local menu_items=()
+    for ep in "${endpoints[@]}"; do
+        local models
+        models=$(curl -s --max-time 3 "${ep}/v1/models" \
+            | jq -r '[.data[].id] | join(", ")' 2>/dev/null || echo "?")
+        menu_items+=("${ep}  [${models}]")
+    done
+    menu_items+=("← Cancel")
+
+    # ── Interactive picker ───────────────────────────────────────────────────
+    local chosen
+    chosen=$(printf '%s\n' "${menu_items[@]}" \
+        | gum choose --header "🖥️  Discovered servers — select one to connect:") || return 1
+    [[ "$chosen" == "← Cancel" ]] && return 1
+
+    # Strip the "  [models]" annotation to get the bare URL
+    REMOTE_ENDPOINT="${chosen%%  *}"
+    export REMOTE_ENDPOINT
+    gum style --foreground 121 "✅ Connected → ${REMOTE_ENDPOINT}"
+
+    # When invoked as `oramalama discover`, drop straight into the REPL
+    [[ "$standalone" == "true" ]] && cmd_run
+    return 0
 }
 
 cmd_stop() {
@@ -1369,6 +1509,7 @@ Subcommands:
   show [model]       Show model metadata (arch, quant, size, context)
   rm [model]         Remove a model
   search             Search and recommend models via llmfit
+  discover           Scan local network + Tailscale for ramalama servers
 
 Global flags:
   --remote <url>     Use a remote ramalama server (e.g. http://myserver:8080)
@@ -1405,7 +1546,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[[ "$SUBCOMMAND" =~ ^(help|--help)$ ]] || check_deps
+[[ "$SUBCOMMAND" =~ ^(help|--help|discover)$ ]] || check_deps
 [ -z "$REMOTE_ENDPOINT" ] && detect_hardware
 
 case "$SUBCOMMAND" in
@@ -1419,6 +1560,7 @@ case "$SUBCOMMAND" in
     show)         cmd_show "$@" ;;
     rm)           cmd_rm "$@" ;;
     search)       cmd_search "$@" ;;
+    discover)     cmd_discover true "$@" ;;
     help|--help)  usage ;;
     *)            echo "❌ Unknown subcommand: $SUBCOMMAND"; usage ;;
 esac
