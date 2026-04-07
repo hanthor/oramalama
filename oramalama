@@ -1100,40 +1100,38 @@ cmd_search() {
 suggest_models_llmfit() { cmd_search; }
 
 # ---------------------------------------------------------------------------
-# launch_open_webui: start Open WebUI container pointed at our API then open
-# a browser tab. Containers can't reach 127.0.0.1 on the host directly, so
-# we rewrite the host part to host.containers.internal (podman/docker).
+# _launch_container: generic helper — start a UI container pointed at the
+# ramalama API, then open a browser tab.  Containers can't reach 127.0.0.1
+# on the host, so callers should pass CONTAINER_API (already rewritten) in
+# env var values rather than the raw ENDPOINT.
+#
+# Usage: _launch_container <display> <cname> <image> <host:cport> KEY=VALUE …
 # ---------------------------------------------------------------------------
-launch_open_webui() {
-    local api_base="$1"
-    local port="${OPEN_WEBUI_PORT:-3000}"
-    local cname="open-webui-oramalama"
+_launch_container() {
+    local display_name="$1" cname="$2" image="$3" port_map="$4"
+    shift 4  # remaining: KEY=VALUE env pairs
+
     local engine
     engine=$(command -v podman 2>/dev/null || command -v docker 2>/dev/null || true)
     if [ -z "$engine" ]; then
-        gum style --foreground 196 "❌ podman or docker is required to run Open WebUI"
+        gum style --foreground 196 "❌ podman or docker is required for ${display_name}"
         return 1
     fi
 
-    # Rewrite localhost to the container-accessible host gateway
-    local container_api="${api_base//127.0.0.1/host.containers.internal}"
-    container_api="${container_api//localhost/host.containers.internal}"
+    local host_port="${port_map%%:*}"
 
     if "$engine" ps --format '{{.Names}}' 2>/dev/null | grep -qx "$cname"; then
-        gum style --foreground 121 "✅ Open WebUI already running → http://localhost:${port}"
+        gum style --foreground 121 "✅ ${display_name} already running → http://localhost:${host_port}"
     else
-        gum style --foreground 212 "🐋 Starting Open WebUI container (ghcr.io/open-webui/open-webui:main)..."
-        dry_run_cmd "$engine run -d --rm \
-            --name '${cname}' \
-            -p ${port}:8080 \
-            -e OPENAI_API_BASE_URL='${container_api}/v1' \
-            -e OPENAI_API_KEY='sk-no-key-required' \
-            ghcr.io/open-webui/open-webui:main"
-        $DRY_RUN || gum spin --spinner dot --title "Waiting for Open WebUI to start..." -- sleep 6
+        gum style --foreground 212 "🐋 Starting ${display_name} (${image})..."
+        local env_flags=""
+        for kv in "$@"; do env_flags+=" -e '${kv}'"; done
+        dry_run_cmd "$engine run -d --rm --name '${cname}' -p ${port_map}${env_flags} '${image}'"
+        $DRY_RUN || gum spin --spinner dot --title "Waiting for ${display_name}..." -- sleep 6
     fi
 
-    gum style --foreground 39 "🌐 Open WebUI → http://localhost:${port}"
-    dry_run_cmd "xdg-open 'http://localhost:${port}'"
+    gum style --foreground 39 "🌐 ${display_name} → http://localhost:${host_port}"
+    dry_run_cmd "xdg-open 'http://localhost:${host_port}'"
 }
 
 cmd_launch() {
@@ -1146,54 +1144,96 @@ cmd_launch() {
         esac
     done
 
-    # Merge with DEFAULT_TOOL from config, then CLI_TOOL from global flags
     [ -z "$launch_tool" ] && launch_tool="${DEFAULT_TOOL:-}"
     [ -z "$launch_tool" ] && launch_tool="${CLI_TOOL:-}"
 
-    # Tool selection
+    # ── Tool selection ───────────────────────────────────────────────────────
     local SELECTED_TOOL
     if [ -n "$launch_tool" ]; then
+        # Direct --tool dispatch (no interactive menu)
         case "${launch_tool,,}" in
-            opencode)                   SELECTED_TOOL="OpenCode" ;;
-            goose)                      SELECTED_TOOL="Goose CLI" ;;
-            aichat)                     SELECTED_TOOL="aichat" ;;
-            webui|web-ui|web_ui)        SELECTED_TOOL="Web UI" ;;
-            open-webui|openwebui)       SELECTED_TOOL="Open WebUI" ;;
-            server|only*)               SELECTED_TOOL="Only Start Server" ;;
-            suggest|llmfit)             cmd_search; return ;;
-            *)                          echo "❌ Unknown tool: $launch_tool"; usage ;;
+            opencode)                  SELECTED_TOOL="OpenCode" ;;
+            goose)                     SELECTED_TOOL="Goose CLI" ;;
+            vscode|code)               SELECTED_TOOL="VS Code" ;;
+            aichat)                    SELECTED_TOOL="aichat" ;;
+            tgpt)                      SELECTED_TOOL="tgpt" ;;
+            webui|web-ui|web_ui)       SELECTED_TOOL="Web UI" ;;
+            open-webui|openwebui)      SELECTED_TOOL="Open WebUI" ;;
+            anythingllm)               SELECTED_TOOL="AnythingLLM" ;;
+            nextchat|next-chat)        SELECTED_TOOL="NextChat" ;;
+            lobe-chat|lobechat)        SELECTED_TOOL="Lobe Chat" ;;
+            big-agi|bigagi)            SELECTED_TOOL="big-AGI" ;;
+            server|only*)              SELECTED_TOOL="Only Start Server" ;;
+            suggest|llmfit)            cmd_search; return ;;
+            *)                         echo "❌ Unknown tool: $launch_tool"; usage ;;
         esac
     else
-        # Build tool list dynamically — only show tools that are installed
-        local TOOLS=()
-        # ── Coding tools ──────────────────────────────────────────────────────
-        command -v opencode &>/dev/null && TOOLS+=("OpenCode")
-        TOOLS+=("Goose CLI")
-        command -v aichat   &>/dev/null && TOOLS+=("aichat")
-        # ── Web UIs ───────────────────────────────────────────────────────────
-        # llama.cpp built-in webui is always available (same port as API, root path)
-        TOOLS+=("Web UI  (llama.cpp built-in)")
-        { command -v podman &>/dev/null || command -v docker &>/dev/null; } \
-            && TOOLS+=("Open WebUI  (container, port ${OPEN_WEBUI_PORT:-3000})")
-        # ── Utilities ─────────────────────────────────────────────────────────
-        TOOLS+=("Only Start Server")
-        command -v llmfit &>/dev/null && TOOLS+=("Suggest Models (llmfit)")
+        # Two-level interactive menu: category → specific tool
+        local has_container=false
+        { command -v podman &>/dev/null || command -v docker &>/dev/null; } && has_container=true
 
-        SELECTED_TOOL=$(printf "%s\n" "${TOOLS[@]}" \
-            | gum choose --header "Select a tool  [coding · web ui · utilities]")
+        local CATS=("Coding Tools" "Web UIs" "Terminal Chat" "Only Start Server")
+        command -v llmfit &>/dev/null && CATS+=("Suggest Models (llmfit)")
+        local CATEGORY
+        CATEGORY=$(printf "%s\n" "${CATS[@]}" \
+            | gum choose --header "What would you like to launch?")
+        [ -z "$CATEGORY" ] && exit 0
+
+        case "$CATEGORY" in
+            "Coding Tools")
+                local T=()
+                command -v opencode &>/dev/null && T+=("OpenCode")
+                T+=("Goose CLI")
+                command -v code &>/dev/null && T+=("VS Code  (Continue / Cline plugin)")
+                [ ${#T[@]} -eq 0 ] && echo "No coding tools found. Install opencode, goose, or code." && exit 1
+                SELECTED_TOOL=$(printf "%s\n" "${T[@]}" | gum choose --header "Select a coding tool")
+                ;;
+            "Web UIs")
+                local T=("Web UI  (llama.cpp built-in, no setup needed)")
+                if $has_container; then
+                    T+=(
+                        "Open WebUI     port ${OPEN_WEBUI_PORT:-3000}"
+                        "AnythingLLM    port 3001"
+                        "NextChat       port 3002"
+                        "Lobe Chat      port 3210"
+                        "big-AGI        port 3003"
+                    )
+                else
+                    T+=("(install podman or docker to enable container UIs)")
+                fi
+                SELECTED_TOOL=$(printf "%s\n" "${T[@]}" \
+                    | gum choose --header "Select a Web UI")
+                [[ "$SELECTED_TOOL" == "("* ]] && exit 0  # placeholder line
+                ;;
+            "Terminal Chat")
+                local T=()
+                command -v aichat &>/dev/null && T+=("aichat")
+                command -v tgpt   &>/dev/null && T+=("tgpt")
+                [ ${#T[@]} -eq 0 ] && echo "No terminal chat tools found. Install aichat or tgpt." && exit 1
+                SELECTED_TOOL=$(printf "%s\n" "${T[@]}" | gum choose --header "Select a terminal chat tool")
+                ;;
+            "Only Start Server")
+                SELECTED_TOOL="Only Start Server" ;;
+            "Suggest Models (llmfit)")
+                cmd_search; return ;;
+        esac
         [ -z "$SELECTED_TOOL" ] && exit 0
     fi
 
-    if [ "$SELECTED_TOOL" = "Suggest Models (llmfit)" ]; then
-        cmd_search
-        return
-    fi
+    [ "$SELECTED_TOOL" = "Suggest Models (llmfit)" ] && { cmd_search; return; }
 
-    # Start or reuse the server (sets ENDPOINT, SELECTED_MODEL, SERVED_MODEL_ID, CTX_SIZE)
+    # ── Start server ─────────────────────────────────────────────────────────
     ensure_server_running
 
-    # Tool execution
+    # Container networking: rewrite 127.0.0.1/localhost so containers can
+    # reach the host API endpoint (podman/docker host gateway).
+    local CONTAINER_API="${ENDPOINT//127.0.0.1/host.containers.internal}"
+    CONTAINER_API="${CONTAINER_API//localhost/host.containers.internal}"
+
+    # ── Tool execution ───────────────────────────────────────────────────────
     case "$SELECTED_TOOL" in
+
+        # ── Coding tools ─────────────────────────────────────────────────────
         "OpenCode")
             local DISPLAY_NAME
             DISPLAY_NAME=$(echo "$SERVED_MODEL_ID" | sed 's|hf://||; s|:| |g; s|/| / |g')
@@ -1203,22 +1243,75 @@ cmd_launch() {
             ;;
         "Goose CLI")
             gum style --foreground 212 "🦢 Launching Goose CLI..."
-            dry_run_cmd "GOOSE_PROVIDER=openai GOOSE_MODEL=${SERVED_MODEL_ID} OPENAI_HOST=${ENDPOINT} OPENAI_API_KEY=sk-no-key-required goose session"
+            dry_run_cmd "GOOSE_PROVIDER=openai GOOSE_MODEL='${SERVED_MODEL_ID}' OPENAI_HOST='${ENDPOINT}' OPENAI_API_KEY='sk-no-key-required' goose session"
             ;;
+        "VS Code"*)
+            gum style --foreground 212 "💡 Opening VS Code..."
+            gum style --foreground 245 "   Install the Continue or Cline extension and point it at ${ENDPOINT}/v1"
+            dry_run_cmd "code ."
+            return
+            ;;
+
+        # ── Terminal chat ─────────────────────────────────────────────────────
         "aichat")
             gum style --foreground 212 "💬 Launching aichat..."
             dry_run_cmd "OPENAI_API_BASE='${ENDPOINT}/v1' OPENAI_API_KEY='sk-no-key-required' aichat"
             ;;
+        "tgpt")
+            gum style --foreground 212 "💬 Launching tgpt..."
+            dry_run_cmd "tgpt --provider openai --url '${ENDPOINT}/v1/chat/completions' --key 'sk-no-key-required' --model '${SERVED_MODEL_ID}'"
+            ;;
+
+        # ── Web UIs ───────────────────────────────────────────────────────────
         "Web UI"*)
-            gum style --foreground 212 "🌐 Opening llama.cpp Web UI..."
+            gum style --foreground 212 "🌐 Opening llama.cpp built-in Web UI..."
             gum style --foreground 39 "   ${ENDPOINT}"
             dry_run_cmd "xdg-open '${ENDPOINT}'"
-            return  # server keeps running; no cleanup needed
+            return
             ;;
         "Open WebUI"*)
-            launch_open_webui "$ENDPOINT"
-            return  # server keeps running; Open WebUI container manages its own lifecycle
+            _launch_container "Open WebUI" "open-webui-oramalama" \
+                "ghcr.io/open-webui/open-webui:main" \
+                "${OPEN_WEBUI_PORT:-3000}:8080" \
+                "OPENAI_API_BASE_URL=${CONTAINER_API}/v1" \
+                "OPENAI_API_KEY=sk-no-key-required"
+            return
             ;;
+        "AnythingLLM"*)
+            _launch_container "AnythingLLM" "anythingllm-oramalama" \
+                "mintplexlabs/anythingllm" \
+                "3001:3001" \
+                "LLM_PROVIDER=openai" \
+                "OPEN_AI_KEY=sk-no-key-required" \
+                "OPEN_MODEL_PREF=${SERVED_MODEL_ID}" \
+                "OPENAI_BASE_PATH=${CONTAINER_API}/v1"
+            return
+            ;;
+        "NextChat"*)
+            _launch_container "NextChat" "nextchat-oramalama" \
+                "yidadaa/chatgpt-next-web" \
+                "3002:3000" \
+                "OPENAI_API_KEY=sk-no-key-required" \
+                "BASE_URL=${CONTAINER_API}"
+            return
+            ;;
+        "Lobe Chat"*)
+            _launch_container "Lobe Chat" "lobechat-oramalama" \
+                "lobehub/lobe-chat" \
+                "3210:3210" \
+                "OPENAI_API_KEY=sk-no-key-required" \
+                "OPENAI_PROXY_URL=${CONTAINER_API}/v1"
+            return
+            ;;
+        "big-AGI"*)
+            _launch_container "big-AGI" "bigagi-oramalama" \
+                "ghcr.io/enricoros/big-agi" \
+                "3003:3000" \
+                "OPENAI_API_HOST=${CONTAINER_API}" \
+                "OPENAI_API_KEY=sk-no-key-required"
+            return
+            ;;
+
         "Only Start Server")
             gum style --foreground 121 \
                 "✅ Server ready" \
@@ -1228,14 +1321,14 @@ cmd_launch() {
             ;;
     esac
 
-    # Cleanup: stop server when last tool instance exits (local only).
-    # Skip if the container is managed by systemd — let the service keep running.
-    # Skip entirely if we're pointed at a remote endpoint.
+    # ── Cleanup for blocking (foreground) tools ───────────────────────────────
+    # Container-based UIs (web) return early above so this only runs for
+    # CLI tools (OpenCode, Goose, aichat, tgpt) that hold the terminal.
     if [ -z "$REMOTE_HOST" ] && [ -z "$REMOTE_ENDPOINT" ]; then
         sleep 1
-        if ! pgrep -f "bin/opencode|goose|claude|copilot|aichat" > /dev/null; then
+        if ! pgrep -f "bin/opencode|goose|claude|copilot|aichat|tgpt" > /dev/null; then
             if systemctl --user is-active --quiet "$QUADLET_SERVICE" 2>/dev/null; then
-                echo "💤 Last instance closed. Leaving systemd service running (use: systemctl --user stop ${QUADLET_SERVICE})"
+                echo "💤 Last instance closed. Leaving systemd service running (use: oramalama stop)"
             else
                 echo "💤 Last instance closed. Stopping RamaLama..."
                 dry_run_cmd "ramalama stop '${CONTAINER_NAME}'"
@@ -1257,12 +1350,18 @@ Subcommands:
                        --hidethinking   Hide <think> blocks from output
                        --verbose        Print tok/s stats after each reply
   serve [model]      Start the inference server (detached)
-  launch             Start server + launch a tool
-                       --tool opencode    AI coding (OpenCode)
-                       --tool goose       AI coding (Goose CLI)
-                       --tool aichat      Terminal chat (aichat)
+  launch             Start server + launch a tool (two-level menu)
+                       --tool opencode    OpenCode (coding)
+                       --tool goose       Goose CLI (coding)
+                       --tool vscode      VS Code — for Continue/Cline
+                       --tool aichat      aichat (terminal chat)
+                       --tool tgpt        tgpt (terminal chat)
                        --tool webui       llama.cpp built-in Web UI (browser)
-                       --tool open-webui  Full chat UI via podman container
+                       --tool open-webui  Open WebUI container (port 3000)
+                       --tool anythingllm AnythingLLM container (port 3001)
+                       --tool nextchat    NextChat container (port 3002)
+                       --tool lobe-chat   Lobe Chat container (port 3210)
+                       --tool big-agi     big-AGI container (port 3003)
   list               List downloaded models
   pull [model]       Pull a model (suggests best fit if no model given)
   ps                 Show running models
