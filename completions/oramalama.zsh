@@ -41,7 +41,7 @@ _oramalama() {
                             _arguments ':model:->models'
                             ;;
                         launch)
-                            _arguments '--tool[Tool to launch]:(opencode goose server)'
+                            _arguments '--tool[Tool to launch]:(opencode goose aichat webui open-webui server)'
                             ;;
                     esac
                     ;;

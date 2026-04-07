@@ -31,7 +31,7 @@ _oramalama_complete() {
             ;;
         launch)
             case "$prev" in
-                --tool) COMPREPLY=($(compgen -W "opencode goose server" -- "$cur")) ;;
+                --tool) COMPREPLY=($(compgen -W "opencode goose aichat webui open-webui server" -- "$cur")) ;;
                 *)      COMPREPLY=($(compgen -W "--tool --model" -- "$cur")) ;;
             esac
             ;;
