@@ -17,7 +17,10 @@ oramalama [--remote <url>] [--model <name>] [--dry-run] <subcommand>
 - **Hardware auto-detection** — Strix Halo (AMD Ryzen AI Max) detected automatically; ramalama picks the right image for NVIDIA / standard AMD / CPU on all other hardware
 - **Remote inference** — point at any ramalama server over Tailscale / LAN with `--remote`
 - **llmfit integration** — `oramalama search` recommends models that fit your GPU
-- **Coding tool launchers** — `oramalama launch` wires up [opencode](https://opencode.ai) or [Goose CLI](https://block.github.io/goose/)
+- **Full tool ecosystem** — `oramalama launch` supports 11 tools across 3 categories:
+  - *Coding:* OpenCode, Goose CLI, VS Code (Continue/Cline)
+  - *Web UIs:* llama.cpp built-in, Open WebUI, AnythingLLM, NextChat, Lobe Chat, big-AGI
+  - *Terminal:* aichat, tgpt
 - **Systemd quadlet** — default model runs as a persistent user service with auto-restart
 - **Tab completion** — bash and zsh completions included
 
@@ -92,15 +95,61 @@ Starts the server detached. Context window and serve flags are auto-tuned per mo
 
 ---
 
-### `launch` — start server + coding tool
+### `launch` — start server + launch a tool
 
 ```bash
-oramalama launch
-oramalama launch --tool opencode
-oramalama launch --tool goose
+oramalama launch                        # two-level interactive menu
+oramalama launch --tool opencode        # jump straight to a tool
+oramalama launch --tool open-webui
 ```
 
-Starts the server, configures the chosen coding tool to use it, then launches the tool. Cleans up on exit (unless managed by systemd).
+Starts the inference server (if not already running), then presents a **two-level menu**:
+
+```
+What would you like to launch?
+  Coding Tools
+  Web UIs
+  Terminal Chat
+  Only Start Server
+  Suggest Models (llmfit)
+```
+
+#### Coding Tools
+
+| Tool | `--tool` | Notes |
+|---|---|---|
+| OpenCode | `opencode` | Configured automatically via `opencode.json` |
+| Goose CLI | `goose` | Launched with `OPENAI_HOST` / `OPENAI_API_KEY` env vars |
+| VS Code | `vscode` | Opens `code .`; install [Continue](https://continue.dev) or [Cline](https://github.com/cline/cline) extension |
+
+#### Web UIs
+
+All container UIs require `podman` or `docker`. They auto-rewrite `127.0.0.1` → `host.containers.internal` so the container can reach the host API. A browser tab opens automatically.
+
+| Tool | `--tool` | Port | Image |
+|---|---|---|---|
+| llama.cpp built-in | `webui` | same as API | built into ramalama — always available |
+| Open WebUI | `open-webui` | 3000 | `ghcr.io/open-webui/open-webui:main` |
+| AnythingLLM | `anythingllm` | 3001 | `mintplexlabs/anythingllm` |
+| NextChat | `nextchat` | 3002 | `yidadaa/chatgpt-next-web` |
+| Lobe Chat | `lobe-chat` | 3210 | `lobehub/lobe-chat` |
+| big-AGI | `big-agi` | 3003 | `ghcr.io/enricoros/big-agi` |
+
+The llama.cpp built-in Web UI is **always on** at the server root URL (e.g. `http://localhost:8080`). No extra setup needed.
+
+#### Terminal Chat
+
+| Tool | `--tool` | Notes |
+|---|---|---|
+| aichat | `aichat` | Sets `OPENAI_API_BASE` + `OPENAI_API_KEY` |
+| tgpt | `tgpt` | `--provider openai --url .../v1/chat/completions` |
+
+#### Utility options
+
+| Option | `--tool` |
+|---|---|
+| Only Start Server | `server` |
+| Suggest Models (llmfit) | `suggest` |
 
 ---
 
@@ -248,8 +297,26 @@ oramalama run --think --verbose
 # Chat hiding the thinking content (clean output only)
 oramalama run --hidethinking
 
+# Open the llama.cpp built-in Web UI in a browser (always available)
+oramalama launch --tool webui
+
 # Start opencode pointed at local model
 oramalama launch --tool opencode
+
+# Start Open WebUI chat interface (requires podman/docker)
+oramalama launch --tool open-webui
+
+# Start AnythingLLM (requires podman/docker)
+oramalama launch --tool anythingllm
+
+# Start NextChat / Lobe Chat / big-AGI
+oramalama launch --tool nextchat
+oramalama launch --tool lobe-chat
+oramalama launch --tool big-agi
+
+# Terminal chat with aichat or tgpt
+oramalama launch --tool aichat
+oramalama launch --tool tgpt
 
 # Use a remote ramalama server
 oramalama --remote http://karnataka:8080 launch --tool opencode
