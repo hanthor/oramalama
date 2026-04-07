@@ -70,27 +70,36 @@ Options:
                     Values: opencode, goose, claude, copilot, server, suggest
   --model <name>    RamaLama model to serve (exact name from 'ramalama list').
                     Example: "hf://unsloth/gemma-4-31B-it-GGUF:Q4_K_M"
+  --karnataka       Connect to karnataka's ramalama server over the Tailnet
+                    instead of starting a local server.
   --suggest         Show llmfit model recommendations and exit.
   --dry-run         Print actions without starting/stopping anything.
   --help            Show this help.
 
 Environment:
-  RAMALAMA_HOST     SSH host to use instead of localhost.
+  RAMALAMA_HOST       SSH host to use instead of localhost (legacy).
+  RAMALAMA_ENDPOINT   Direct HTTP endpoint, e.g. http://karnataka:8080
+                      Skips all server lifecycle management.
 EOF
     exit 0
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --tool)    CLI_TOOL="$2";  shift 2 ;;
-        --model)   CLI_MODEL="$2"; shift 2 ;;
-        --suggest) CLI_SUGGEST=true; shift ;;
-        --dry-run) DRY_RUN=true; shift ;;
-        --help|-h) usage ;;
-        --)        shift; break ;;
-        *)         break ;;
+        --tool)       CLI_TOOL="$2";  shift 2 ;;
+        --model)      CLI_MODEL="$2"; shift 2 ;;
+        --karnataka)  RAMALAMA_ENDPOINT="http://karnataka:8080"; shift ;;
+        --suggest)    CLI_SUGGEST=true; shift ;;
+        --dry-run)    DRY_RUN=true; shift ;;
+        --help|-h)    usage ;;
+        --)           shift; break ;;
+        *)            break ;;
     esac
 done
+
+# RAMALAMA_ENDPOINT: when set, skip all server lifecycle and point directly at
+# the given HTTP endpoint (e.g. karnataka's ramalama over Tailnet).
+REMOTE_ENDPOINT="${RAMALAMA_ENDPOINT:-}"
 
 # Helper: echo action but skip execution in dry-run mode
 dry_run_cmd() {
@@ -110,14 +119,26 @@ run_cmd() {
     fi
 }
 
-# Function to get models in JSON format
+# Function to get models in JSON format.
+# When REMOTE_ENDPOINT is set, fetch from /v1/models HTTP API instead of
+# running ramalama locally — avoids needing ramalama/podman on the client.
 get_models_json() {
-    run_cmd "ramalama list --json"
+    if [ -n "$REMOTE_ENDPOINT" ]; then
+        curl -s "${REMOTE_ENDPOINT}/v1/models" \
+            | jq '[.data[] | {name: .id, size: 0}]'
+    else
+        run_cmd "ramalama list --json"
+    fi
 }
 
 # Function to check if ramalama is running with the correct image.
 # For the default model, also considers the quadlet systemd service.
 is_ramalama_running() {
+    # Remote endpoint: check liveness via HTTP health endpoint.
+    if [ -n "$REMOTE_ENDPOINT" ]; then
+        curl -sf "${REMOTE_ENDPOINT}/health" > /dev/null 2>&1
+        return
+    fi
     if [[ "$SELECTED_MODEL" == "$DEFAULT_MODEL" ]]; then
         systemctl --user is-active --quiet "$QUADLET_SERVICE" && return 0
     fi
@@ -153,6 +174,12 @@ detect_gtt() {
 # get_ramalama_endpoint: Returns the base endpoint URL, detecting actual port 
 # ---------------------------------------------------------------------------
 get_ramalama_endpoint() {
+    # Direct remote endpoint (e.g. karnataka over Tailnet) — use as-is.
+    if [ -n "$REMOTE_ENDPOINT" ]; then
+        echo "$REMOTE_ENDPOINT"
+        return
+    fi
+
     local host_base="http://${LOCAL_HOST}"
     local port="${LOCAL_PORT}"
     
@@ -173,7 +200,8 @@ get_ramalama_endpoint() {
 # ---------------------------------------------------------------------------
 check_resources() {
     local required_gb=$1
-    [ -n "$REMOTE_HOST" ] && return  # skip for remote
+    [ -n "$REMOTE_HOST" ] && return     # skip for SSH remote
+    [ -n "$REMOTE_ENDPOINT" ] && return # skip for direct HTTP remote
 
     detect_gtt
     local AVAIL_GTT=$GTT_AVAIL_GB
@@ -254,7 +282,8 @@ configure_opencode() {
     [ -f "$OPENCODE_CONFIG" ] || return
 
     local base_url="${base_endpoint}/v1"
-    [ -n "$REMOTE_HOST" ] && base_url="http://${REMOTE_HOST}:${LOCAL_PORT}/v1" # Need to rethink remote ports later if needed, but keeping it simple
+    # Legacy SSH remote: override with explicit host:port
+    [ -n "$REMOTE_HOST" ] && base_url="http://${REMOTE_HOST}:${LOCAL_PORT}/v1"
 
     TEMP=$(mktemp --suffix=.json)
 
@@ -388,7 +417,16 @@ fi
 # -----------------------------------------------------------------------
 # Check if ramalama is running with the correct image
 # -----------------------------------------------------------------------
+if [ -n "$REMOTE_ENDPOINT" ] && ! curl -sf "${REMOTE_ENDPOINT}/health" >/dev/null 2>&1; then
+    gum style --foreground 196 "❌ Cannot reach ramalama at ${REMOTE_ENDPOINT} — is karnataka up and on the Tailnet?"
+    exit 1
+fi
+
 if ! is_ramalama_running; then
+    if [ -n "$REMOTE_ENDPOINT" ]; then
+        # Should not be reached (checked above), but guard just in case.
+        echo "❌ Remote endpoint ${REMOTE_ENDPOINT} not healthy." && exit 1
+    fi
     if run_cmd "ramalama ps --noheading" | grep -q "${CONTAINER_NAME}"; then
         gum style --foreground 212 "🔄 Restarting RamaLama with optimized Strix Halo toolbox..."
         run_cmd "ramalama stop ${CONTAINER_NAME}"
@@ -593,7 +631,8 @@ esac
 
 # Cleanup: stop server when last tool instance exits (local only).
 # Skip if the container is managed by systemd — let the service keep running.
-if [ -z "$REMOTE_HOST" ]; then
+# Skip entirely if we're pointed at a remote endpoint.
+if [ -z "$REMOTE_HOST" ] && [ -z "$REMOTE_ENDPOINT" ]; then
     sleep 1
     if ! pgrep -f "bin/opencode|goose|claude|copilot" > /dev/null; then
         if systemctl --user is-active --quiet "$QUADLET_SERVICE" 2>/dev/null; then
