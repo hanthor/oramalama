@@ -1,6 +1,14 @@
 #!/bin/bash
+#
+# oramalama — local AI coding assistant powered by RamaLama
+# https://github.com/containers/ramalama
+#
+# Subcommands: run  serve  launch  list  pull  ps  rm  search
+# Global flags: --remote <url>  --model <name>  --dry-run
 
-# Configuration
+# ---------------------------------------------------------------------------
+# Configuration defaults
+# ---------------------------------------------------------------------------
 CONTAINER_NAME="ramalama-opencode"
 LOCAL_HOST="127.0.0.1"
 LOCAL_PORT="8080"
@@ -61,6 +69,7 @@ detect_hardware() {
         fi
     done
 }
+
 # Strix Halo has ~113GB GPU pool but only ~31GB system RAM. KV cache lives on
 # GPU (fine), but host-side compute buffers and the process RSS live in system
 # RAM. Larger models leave less headroom for KV even on GPU, so we scale down.
@@ -92,67 +101,11 @@ get_ctx_size() {
     esac
 }
 
-# ---------------------------------------------------------------------------
-# CLI flags — allow fully non-interactive operation
-#   --tool <opencode|goose|claude|copilot|server|suggest>
-#   --model <ramalama-model-name>   (exact name from ramalama list)
-#   --suggest                       run llmfit suggestions and exit
-#   --dry-run                       print what would happen, make no changes
-#   --help
-# ---------------------------------------------------------------------------
-CLI_TOOL=""
-CLI_MODEL=""
-CLI_SUGGEST=false
-DRY_RUN=false
+# ============================================================================
+# SHARED HELPERS
+# ============================================================================
 
-usage() {
-    cat <<EOF
-Usage: $(basename "$0") [OPTIONS] [-- opencode-args...]
-
-Options:
-  --tool <name>     Tool to launch without prompting.
-                    Values: opencode, goose, server, suggest
-  --model <name>    Model to use (exact name from 'ramalama list').
-                    Example: "hf://unsloth/gemma-4-31B-it-GGUF:Q4_K_M"
-  --remote <url>    Connect to a remote ramalama server instead of starting
-                    a local one. Example: --remote http://myserver:8080
-  --suggest         Show llmfit model recommendations and exit.
-  --dry-run         Print actions without starting/stopping anything.
-  --help            Show this help.
-
-Environment / config (~/.config/oramalama/config):
-  RAMALAMA_ENDPOINT   Same as --remote, e.g. http://myserver:8080
-  DEFAULT_TOOL        Pre-select a tool (opencode, goose, server)
-  DEFAULT_MODEL       Override the default model
-EOF
-    exit 0
-}
-
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --tool)       CLI_TOOL="$2";  shift 2 ;;
-        --model)      CLI_MODEL="$2"; shift 2 ;;
-        --remote)     RAMALAMA_ENDPOINT="$2"; shift 2 ;;
-        --suggest)    CLI_SUGGEST=true; shift ;;
-        --dry-run)    DRY_RUN=true; shift ;;
-        --help|-h)    usage ;;
-        --)           shift; break ;;
-        *)            break ;;
-    esac
-done
-
-# RAMALAMA_ENDPOINT: when set, skip all server lifecycle and point directly at
-# the given HTTP endpoint.
-REMOTE_ENDPOINT="${RAMALAMA_ENDPOINT:-}"
-
-# DEFAULT_TOOL from config can pre-select a tool (still overridable by --tool).
-[ -z "$CLI_TOOL" ] && CLI_TOOL="${DEFAULT_TOOL:-}"
-
-# Detect local hardware — sets USE_IMAGE and EXTRA_SERVE_FLAGS.
-# Skip when pointing at a remote endpoint (we don't serve locally).
-[ -z "$REMOTE_ENDPOINT" ] && detect_hardware
-
-# Helper: echo action but skip execution in dry-run mode
+# Echo action but skip execution in dry-run mode
 dry_run_cmd() {
     if $DRY_RUN; then
         echo "[dry-run] $*"
@@ -161,7 +114,7 @@ dry_run_cmd() {
     fi
 }
 
-# Function to run commands locally or via SSH
+# Run commands locally or via SSH
 run_cmd() {
     if [ -n "$REMOTE_HOST" ]; then
         ssh -o ConnectTimeout=5 "$REMOTE_HOST" "$@"
@@ -170,7 +123,7 @@ run_cmd() {
     fi
 }
 
-# Function to get models in JSON format.
+# Get models in JSON format.
 # When REMOTE_ENDPOINT is set, fetch from /v1/models HTTP API instead of
 # running ramalama locally — avoids needing ramalama/podman on the client.
 get_models_json() {
@@ -182,7 +135,7 @@ get_models_json() {
     fi
 }
 
-# Function to check if ramalama is running with the correct image.
+# Check if ramalama is running with the correct image.
 # For the default model, also considers the quadlet systemd service.
 is_ramalama_running() {
     # Remote endpoint: check liveness via HTTP health endpoint.
@@ -222,7 +175,7 @@ detect_gtt() {
 }
 
 # ---------------------------------------------------------------------------
-# get_ramalama_endpoint: Returns the base endpoint URL, detecting actual port 
+# get_ramalama_endpoint: Returns the base endpoint URL, detecting actual port
 # ---------------------------------------------------------------------------
 get_ramalama_endpoint() {
     # Direct remote endpoint — use as-is.
@@ -233,7 +186,7 @@ get_ramalama_endpoint() {
 
     local host_base="http://${LOCAL_HOST}"
     local port="${LOCAL_PORT}"
-    
+
     # If a container named $CONTAINER_NAME exists, try to get its mapped port
     if run_cmd "podman inspect --format='{{.State.Status}}' ${CONTAINER_NAME} 2>/dev/null" | grep -q 'running'; then
         local mapped_port
@@ -365,11 +318,392 @@ configure_opencode() {
 }
 
 # ---------------------------------------------------------------------------
-# suggest_models_llmfit: use llmfit to recommend & optionally pull new models
+# pick_model HEADER [models_json]
+# Prints selected model name to stdout; returns 1 if user cancels.
 # ---------------------------------------------------------------------------
-suggest_models_llmfit() {
-    if ! command -v llmfit &>/dev/null; then
+pick_model() {
+    local header="$1"
+    local models_json="${2:-$(get_models_json)}"
+    local models_with_size default_line other_lines selected_line
+
+    models_with_size=$(echo "$models_json" | jq -r '.[] | "\(.name)  (\((.size//0)/1073741824|floor)GB)"')
+    default_line=$(echo "$models_with_size" | grep -F "$DEFAULT_MODEL" | head -1)
+    if [ -n "$default_line" ]; then
+        other_lines=$(echo "$models_with_size" | grep -vF "$DEFAULT_MODEL")
+        models_with_size=$(printf "%s\n%s" "$default_line" "$other_lines")
+    fi
+    selected_line=$(echo "$models_with_size" | gum choose --header "$header")
+    [ -z "$selected_line" ] && return 1
+    echo "$selected_line" | sed 's/  (.*//'
+}
+
+# ---------------------------------------------------------------------------
+# ensure_server_running: start server if needed; handle model switch if already
+# running. Sets globals: ENDPOINT, SELECTED_MODEL, SERVED_MODEL_ID, CTX_SIZE
+# ---------------------------------------------------------------------------
+ensure_server_running() {
+    if [ -n "$REMOTE_ENDPOINT" ] && ! curl -sf "${REMOTE_ENDPOINT}/health" >/dev/null 2>&1; then
+        gum style --foreground 196 "❌ Cannot reach ramalama at ${REMOTE_ENDPOINT} — is the server running and reachable?"
+        exit 1
+    fi
+
+    if ! is_ramalama_running; then
+        if [ -n "$REMOTE_ENDPOINT" ]; then
+            echo "❌ Remote endpoint ${REMOTE_ENDPOINT} not healthy." && exit 1
+        fi
+        if run_cmd "ramalama ps --noheading" | grep -q "${CONTAINER_NAME}"; then
+            gum style --foreground 212 "🔄 Restarting RamaLama with optimized Strix Halo toolbox..."
+            run_cmd "ramalama stop ${CONTAINER_NAME}"
+            sleep 2
+        fi
+
+        # Model selection
+        local models_json model_names
+        models_json=$(get_models_json)
+        model_names=$(echo "$models_json" | jq -r '.[].name // empty')
+
+        if [ -z "$model_names" ]; then
+            echo "❌ No RamaLama models found on $([ -n "$REMOTE_HOST" ] && echo "$REMOTE_HOST" || echo "local system")."
+            if command -v llmfit &>/dev/null; then
+                if $DRY_RUN || gum confirm "Run llmfit to find & pull a recommended model?"; then
+                    cmd_search
+                fi
+            fi
+            exit 1
+        fi
+
+        if [ -n "$CLI_MODEL" ]; then
+            if echo "$model_names" | grep -qF "$CLI_MODEL"; then
+                SELECTED_MODEL="$CLI_MODEL"
+            else
+                echo "❌ Model not found in ramalama list: $CLI_MODEL"
+                echo "Available models:"
+                echo "$model_names" | sed 's/^/  /'
+                exit 1
+            fi
+        else
+            SELECTED_MODEL=$(pick_model "Select a model to serve  [default: gemma-4-31B-it Q4_K_M]" "$models_json") || exit 1
+        fi
+
+        local model_size_bytes model_size_gb required_gb
+        model_size_bytes=$(echo "$models_json" | jq -r --arg n "$SELECTED_MODEL" '.[] | select(.name == $n) | .size')
+        model_size_gb=$(( ${model_size_bytes:-0} / 1024 / 1024 / 1024 ))
+        required_gb=$(( model_size_gb + 4 ))
+
+        CTX_SIZE=$(get_ctx_size "$SELECTED_MODEL")
+        echo "📐 Context window for ${SELECTED_MODEL}: ${CTX_SIZE} tokens"
+
+        detect_gtt
+
+        if [ "$model_size_gb" -gt "$GTT_TOTAL_GB" ] && [ "$GTT_TOTAL_GB" -gt 0 ]; then
+            gum style --border double --border-foreground 196 --margin "1" --padding "1" \
+                "🚫 MODEL TOO LARGE FOR GPU POOL" \
+                "Model size:       ${model_size_gb}GB" \
+                "GPU pool (GTT):   ${GTT_TOTAL_GB}GB  (${GTT_AVAIL_GB}GB free)" \
+                "This model will NOT load. Select a smaller model or increase VRAM in BIOS."
+
+            if command -v llmfit &>/dev/null && gum confirm "Show llmfit-recommended models that DO fit?"; then
+                cmd_search
+            fi
+            exit 1
+        fi
+
+        check_resources "$required_gb"
+
+        echo "�� Starting RamaLama with ${SELECTED_MODEL}..."
+        if [[ "$SELECTED_MODEL" == "$DEFAULT_MODEL" ]] && systemctl --user list-unit-files --quiet "$QUADLET_SERVICE" &>/dev/null; then
+            dry_run_cmd "systemctl --user start '${QUADLET_SERVICE}'"
+        else
+            local image_flag=""
+            [ -n "$USE_IMAGE" ] && image_flag="--image ${USE_IMAGE}"
+            dry_run_cmd "run_cmd 'ramalama serve --detach --name ${CONTAINER_NAME} ${image_flag} -c ${CTX_SIZE} --runtime-args=\"${EXTRA_SERVE_FLAGS}\" ${SELECTED_MODEL}'"
+        fi
+
+        sleep 2
+        ENDPOINT=$(get_ramalama_endpoint)
+
+        if [ -n "$REMOTE_HOST" ]; then
+            local remote_port
+            remote_port=$(echo "$ENDPOINT" | grep -o ':[0-9]\+$' | tr -d ':')
+            echo "ℹ️  Ensure port ${remote_port} is accessible from ${REMOTE_HOST}"
+            ENDPOINT="http://${REMOTE_HOST}:${remote_port}"
+        fi
+
+        if ! $DRY_RUN && ! wait_for_server "$ENDPOINT"; then
+            echo "❌ Aborting — server failed to start."
+            exit 1
+        fi
+
+        if $DRY_RUN; then
+            SERVED_MODEL_ID="$SELECTED_MODEL"
+        else
+            SERVED_MODEL_ID=$(get_model_id_from_endpoint "$ENDPOINT")
+            [ -z "$SERVED_MODEL_ID" ] && SERVED_MODEL_ID="$SELECTED_MODEL"
+        fi
+    else
+        # Already running — detect the live model then decide whether to switch.
+        ENDPOINT=$(get_ramalama_endpoint)
+
+        if ! $DRY_RUN; then
+            local running_model
+            running_model=$(get_model_id_from_endpoint "$ENDPOINT")
+            if [ -z "$running_model" ]; then
+                local container_model
+                container_model=$(podman inspect --format='{{.Args}}' ${CONTAINER_NAME} 2>/dev/null | grep -o 'hf://[^ ]*' | tr -d ']')
+                running_model="${container_model:-unknown-model}"
+            fi
+            echo "✅ RamaLama already running with: ${running_model} on ${ENDPOINT}"
+
+            # Determine desired model (flag or interactive picker)
+            local desired_model
+            if [ -n "$CLI_MODEL" ]; then
+                desired_model="$CLI_MODEL"
+            else
+                local models_json
+                models_json=$(get_models_json)
+                desired_model=$(pick_model "Running: ${running_model} — keep or switch?  [default: gemma-4-31B-it Q4_K_M]" "$models_json") || exit 0
+            fi
+
+            if [[ "$desired_model" != "$running_model" ]]; then
+                gum style --foreground 212 "🔄 Switching model: ${running_model} → ${desired_model}"
+                if systemctl --user is-active --quiet "$QUADLET_SERVICE" 2>/dev/null; then
+                    dry_run_cmd "systemctl --user stop '${QUADLET_SERVICE}'"
+                else
+                    dry_run_cmd "ramalama stop '${CONTAINER_NAME}'"
+                fi
+                sleep 2
+
+                SELECTED_MODEL="$desired_model"
+                CTX_SIZE=$(get_ctx_size "$SELECTED_MODEL")
+                echo "📐 Context window for ${SELECTED_MODEL}: ${CTX_SIZE} tokens"
+                detect_gtt
+
+                local switch_models_json switch_size_bytes switch_size_gb switch_required_gb
+                switch_models_json=$(get_models_json)
+                switch_size_bytes=$(echo "$switch_models_json" | jq -r --arg n "$SELECTED_MODEL" '.[] | select(.name == $n) | .size // 0')
+                switch_size_gb=$(( ${switch_size_bytes:-0} / 1024 / 1024 / 1024 ))
+                switch_required_gb=$(( switch_size_gb + 4 ))
+                check_resources "$switch_required_gb"
+
+                echo "🚀 Starting RamaLama with ${SELECTED_MODEL}..."
+                if [[ "$SELECTED_MODEL" == "$DEFAULT_MODEL" ]] && systemctl --user list-unit-files --quiet "$QUADLET_SERVICE" &>/dev/null; then
+                    dry_run_cmd "systemctl --user start '${QUADLET_SERVICE}'"
+                else
+                    local image_flag=""
+                    [ -n "$USE_IMAGE" ] && image_flag="--image ${USE_IMAGE}"
+                    dry_run_cmd "run_cmd 'ramalama serve --detach --name ${CONTAINER_NAME} ${image_flag} -c ${CTX_SIZE} --runtime-args=\"${EXTRA_SERVE_FLAGS}\" ${SELECTED_MODEL}'"
+                fi
+                sleep 2
+                ENDPOINT=$(get_ramalama_endpoint)
+                if ! $DRY_RUN && ! wait_for_server "$ENDPOINT"; then
+                    echo "❌ Aborting — server failed to start after switch."
+                    exit 1
+                fi
+            else
+                SELECTED_MODEL="$running_model"
+            fi
+
+            SERVED_MODEL_ID=$(get_model_id_from_endpoint "$ENDPOINT")
+            [ -z "$SERVED_MODEL_ID" ] && SERVED_MODEL_ID="$SELECTED_MODEL"
+        else
+            SERVED_MODEL_ID="${CLI_MODEL:-dry-run-model}"
+            SELECTED_MODEL="$SERVED_MODEL_ID"
+        fi
+        CTX_SIZE=$(get_ctx_size "$SELECTED_MODEL")
+    fi
+}
+
+# ============================================================================
+# SUBCOMMAND FUNCTIONS
+# ============================================================================
+
+cmd_list() {
+    local models_json
+    models_json=$(get_models_json)
+    if [ -z "$models_json" ] || [ "$models_json" = "[]" ]; then
+        echo "No models found. Run: oramalama pull"
         return
+    fi
+    local header="NAME\tSIZE\tCONTEXT\tMODIFIED"
+    local rows
+    rows=$(echo "$models_json" | jq -r '.[] |
+        [
+            .name,
+            ((.size // 0) / 1073741824 | floor | tostring) + "GB",
+            "",
+            (.modified // "—")
+        ] | @tsv')
+    local table_data="$header"
+    while IFS=$'\t' read -r name size _ctx modified; do
+        local ctx
+        ctx=$(get_ctx_size "$name")
+        local display_name="$name"
+        [[ "$name" == "$DEFAULT_MODEL" ]] && display_name="★ $name"
+        table_data+=$'\n'"${display_name}\t${size}\t${ctx}\t${modified}"
+    done <<< "$rows"
+    echo "$table_data" | gum table
+}
+
+cmd_ps() {
+    if [ -n "$REMOTE_ENDPOINT" ]; then
+        if curl -sf "${REMOTE_ENDPOINT}/health" >/dev/null 2>&1; then
+            local model
+            model=$(curl -s "${REMOTE_ENDPOINT}/v1/models" | jq -r '[.data[].id] | join(", ")' 2>/dev/null)
+            echo "NAME\tENDPOINT\tSTATUS" | gum table
+            printf "%s\t%s\t%s\n" "$model" "$REMOTE_ENDPOINT" "running" | gum table
+        else
+            echo "No server running at ${REMOTE_ENDPOINT}"
+        fi
+        return
+    fi
+    local ps_out
+    ps_out=$(ramalama ps --noheading 2>/dev/null)
+    if [ -z "$ps_out" ]; then
+        echo "No models currently running."
+        return
+    fi
+    local endpoint
+    endpoint=$(get_ramalama_endpoint)
+    echo "NAME\tMODEL\tENDPOINT" | gum table
+    echo "$ps_out" | while read -r line; do
+        local cname model
+        cname=$(echo "$line" | awk '{print $NF}')
+        model=$(podman inspect --format='{{index .Config.Cmd}}' "$cname" 2>/dev/null | grep -o 'hf://[^ ]*\|/mnt/models/[^ ]*' | head -1)
+        printf "%s\t%s\t%s\n" "$cname" "${model:-unknown}" "$endpoint"
+    done | gum table
+}
+
+cmd_pull() {
+    local model="${1:-}"
+    if [ -z "$model" ] && [ -n "$CLI_MODEL" ]; then
+        model="$CLI_MODEL"
+    fi
+    if [ -z "$model" ]; then
+        cmd_search
+        return
+    fi
+    echo "📥 Pulling ${model}..."
+    if $DRY_RUN; then
+        echo "[dry-run] ramalama pull ${model}"
+        return
+    fi
+    ramalama pull "$model" && \
+        gum style --foreground 121 "✅ Pulled ${model}" || \
+        gum style --foreground 196 "❌ Pull failed"
+}
+
+cmd_rm() {
+    local model="${1:-$CLI_MODEL}"
+    if [ -z "$model" ]; then
+        local models_json
+        models_json=$(get_models_json)
+        local selected
+        selected=$(echo "$models_json" | jq -r '.[] | "\(.name)  (\((.size//0)/1073741824|floor)GB)"' \
+            | gum choose --header "Select model to remove")
+        [ -z "$selected" ] && return
+        model=$(echo "$selected" | sed 's/  (.*//')
+    fi
+    gum confirm "Remove ${model}?" || return
+    dry_run_cmd "ramalama rm '${model}'" && \
+        gum style --foreground 121 "✅ Removed ${model}"
+}
+
+cmd_run() {
+    local model="${1:-$CLI_MODEL}"
+
+    if [ -z "$model" ]; then
+        local models_json model_names
+        models_json=$(get_models_json)
+        model_names=$(echo "$models_json" | jq -r '.[].name // empty')
+        if [ -z "$model_names" ]; then
+            echo "No models found. Run: oramalama pull"
+            exit 1
+        fi
+        model=$(pick_model "Select a model to chat with" "$models_json") || exit 0
+    fi
+
+    if [ -z "$REMOTE_ENDPOINT" ]; then
+        if ! ramalama list --json 2>/dev/null | jq -r '.[].name' | grep -qF "$model"; then
+            gum confirm "Model not found locally. Pull ${model}?" || exit 0
+            ramalama pull "$model" || exit 1
+        fi
+        local ctx image_flag
+        ctx=$(get_ctx_size "$model")
+        image_flag=""
+        [ -n "$USE_IMAGE" ] && image_flag="--image ${USE_IMAGE}"
+        echo "💬 Starting chat with ${model}..."
+        dry_run_cmd "ramalama run ${image_flag} -c ${ctx} --runtime-args=\"${EXTRA_SERVE_FLAGS}\" '${model}'"
+    else
+        echo "ℹ️  For remote servers, use the endpoint directly: ${REMOTE_ENDPOINT}/v1"
+    fi
+}
+
+cmd_serve() {
+    local model="${1:-$CLI_MODEL}"
+
+    if [ -n "$REMOTE_ENDPOINT" ]; then
+        echo "ℹ️  Using remote server at ${REMOTE_ENDPOINT}"
+        get_ramalama_endpoint
+        return
+    fi
+
+    if [ -z "$model" ]; then
+        local models_json model_names
+        models_json=$(get_models_json)
+        model_names=$(echo "$models_json" | jq -r '.[].name // empty')
+        if [ -z "$model_names" ]; then
+            echo "❌ No models found. Run: oramalama pull"
+            exit 1
+        fi
+        model=$(pick_model "Select a model to serve" "$models_json") || exit 0
+    fi
+
+    SELECTED_MODEL="$model"
+    local ctx
+    ctx=$(get_ctx_size "$SELECTED_MODEL")
+    CTX_SIZE="$ctx"
+    echo "📐 Context window: ${CTX_SIZE} tokens"
+
+    local models_json model_size_bytes model_size_gb required_gb
+    models_json=$(get_models_json)
+    model_size_bytes=$(echo "$models_json" | jq -r --arg n "$SELECTED_MODEL" '.[] | select(.name==$n) | .size // 0')
+    model_size_gb=$(( ${model_size_bytes:-0} / 1024 / 1024 / 1024 ))
+    required_gb=$(( model_size_gb + 4 ))
+    detect_gtt
+    if [ "$model_size_gb" -gt "$GTT_TOTAL_GB" ] && [ "$GTT_TOTAL_GB" -gt 0 ]; then
+        gum style --border double --border-foreground 196 --margin "1" --padding "1" \
+            "🚫 MODEL TOO LARGE" \
+            "Model: ${model_size_gb}GB  GPU pool: ${GTT_TOTAL_GB}GB"
+        exit 1
+    fi
+    check_resources "$required_gb"
+
+    echo "🚀 Starting server with ${SELECTED_MODEL}..."
+    if [[ "$SELECTED_MODEL" == "$DEFAULT_MODEL" ]] && systemctl --user list-unit-files --quiet "$QUADLET_SERVICE" &>/dev/null; then
+        dry_run_cmd "systemctl --user start '${QUADLET_SERVICE}'"
+    else
+        local image_flag=""
+        [ -n "$USE_IMAGE" ] && image_flag="--image ${USE_IMAGE}"
+        dry_run_cmd "run_cmd 'ramalama serve --detach --name ${CONTAINER_NAME} ${image_flag} -c ${CTX_SIZE} --runtime-args=\"${EXTRA_SERVE_FLAGS}\" ${SELECTED_MODEL}'"
+    fi
+    sleep 2
+
+    local endpoint
+    endpoint=$(get_ramalama_endpoint)
+    if ! $DRY_RUN && ! wait_for_server "$endpoint"; then
+        echo "❌ Server failed to start."
+        exit 1
+    fi
+    echo "🟢 Server ready at ${endpoint}/v1"
+    ENDPOINT="$endpoint"
+}
+
+cmd_search() {
+    if ! command -v llmfit &>/dev/null; then
+        gum style --foreground 196 \
+            "⚠️  llmfit is not installed. Install it for model recommendations:" \
+            "    https://github.com/jmorganca/llmfit"
+        return 1
     fi
 
     # Read actual GTT total from sysfs — reflects BIOS VRAM allocation (e.g. 96GB)
@@ -378,6 +712,7 @@ suggest_models_llmfit() {
     local MEM_FLAG="${GTT_TOTAL_GB}G"
     gum style --foreground 212 "🤖 Querying llmfit for hardware-optimal models (Strix Halo, ${GTT_TOTAL_GB}GB GPU pool)..."
 
+    local LLMFIT_JSON
     LLMFIT_JSON=$(llmfit \
         --memory "${MEM_FLAG}" \
         recommend \
@@ -392,6 +727,7 @@ suggest_models_llmfit() {
     fi
 
     # Build a human-readable list: "name (Xgb, ~Y tok/s) [best_quant]"
+    local SUGGESTIONS
     SUGGESTIONS=$(echo "$LLMFIT_JSON" | jq -r '
         .models[] |
         "\(.name)  (\(.memory_required_gb | floor)GB, ~\(.estimated_tps | floor) tok/s, \(.best_quant))"
@@ -401,24 +737,29 @@ suggest_models_llmfit() {
     echo "$SUGGESTIONS" | gum style --foreground 105
 
     if gum confirm "Would you like to pull one of these recommended models via ramalama?"; then
+        local SELECTED_LINE
         SELECTED_LINE=$(echo "$SUGGESTIONS" | gum choose --header "Select a model to pull")
         [ -z "$SELECTED_LINE" ] && return
 
         # Extract original name (before the parenthetical suffix)
+        local SELECTED_LLMFIT_NAME
         SELECTED_LLMFIT_NAME=$(echo "$SELECTED_LINE" | sed 's/  (.*//')
 
         # Find best_quant for this model
+        local BEST_QUANT
         BEST_QUANT=$(echo "$LLMFIT_JSON" | jq -r \
             --arg n "$SELECTED_LLMFIT_NAME" \
             '.models[] | select(.name == $n) | .best_quant')
 
         # Find a gguf_source repo (prefer unsloth or bartowski)
+        local GGUF_REPO
         GGUF_REPO=$(echo "$LLMFIT_JSON" | jq -r \
             --arg n "$SELECTED_LLMFIT_NAME" \
             '.models[] | select(.name == $n) | .gguf_sources[]
              | select(.provider == "unsloth" or .provider == "bartowski")
              | .repo' | head -1)
 
+        local PULL_REF
         if [ -n "$GGUF_REPO" ]; then
             PULL_REF="hf://${GGUF_REPO}:${BEST_QUANT}"
         else
@@ -434,266 +775,146 @@ suggest_models_llmfit() {
     fi
 }
 
-# ===========================================================================
-# MAIN
-# ===========================================================================
+# Backward-compat alias
+suggest_models_llmfit() { cmd_search; }
 
-# Handle --suggest / Suggest Models mode
-if $CLI_SUGGEST; then
-    suggest_models_llmfit
-    exit 0
-fi
+cmd_launch() {
+    local launch_tool=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --tool)    launch_tool="$2"; shift 2 ;;
+            --suggest) cmd_search; return ;;
+            *)         break ;;
+        esac
+    done
 
-# 1. Tool Selection
-if [ -n "$CLI_TOOL" ]; then
-    # Normalise flag value -> display name used by case statement
-    case "${CLI_TOOL,,}" in
-        opencode)          SELECTED_TOOL="OpenCode" ;;
-        goose)             SELECTED_TOOL="Goose CLI" ;;
-        server|only*)      SELECTED_TOOL="Only Start Server" ;;
-        suggest|llmfit)    suggest_models_llmfit; exit 0 ;;
-        *)  echo "❌ Unknown tool: $CLI_TOOL"; usage ;;
+    # Merge with DEFAULT_TOOL from config, then CLI_TOOL from global flags
+    [ -z "$launch_tool" ] && launch_tool="${DEFAULT_TOOL:-}"
+    [ -z "$launch_tool" ] && launch_tool="${CLI_TOOL:-}"
+
+    # Tool selection
+    local SELECTED_TOOL
+    if [ -n "$launch_tool" ]; then
+        case "${launch_tool,,}" in
+            opencode)          SELECTED_TOOL="OpenCode" ;;
+            goose)             SELECTED_TOOL="Goose CLI" ;;
+            server|only*)      SELECTED_TOOL="Only Start Server" ;;
+            suggest|llmfit)    cmd_search; return ;;
+            *)  echo "❌ Unknown tool: $launch_tool"; usage ;;
+        esac
+    else
+        local TOOLS=("OpenCode" "Goose CLI" "Only Start Server")
+        command -v llmfit &>/dev/null && TOOLS+=("Suggest Models (llmfit)")
+        SELECTED_TOOL=$(printf "%s\n" "${TOOLS[@]}" | gum choose --header "Select a tool to launch")
+        [ -z "$SELECTED_TOOL" ] && exit 0
+    fi
+
+    if [ "$SELECTED_TOOL" = "Suggest Models (llmfit)" ]; then
+        cmd_search
+        return
+    fi
+
+    # Start or reuse the server (sets ENDPOINT, SELECTED_MODEL, SERVED_MODEL_ID, CTX_SIZE)
+    ensure_server_running
+
+    # Tool execution
+    case "$SELECTED_TOOL" in
+        "OpenCode")
+            local DISPLAY_NAME
+            DISPLAY_NAME=$(echo "$SERVED_MODEL_ID" | sed 's|hf://||; s|:| |g; s|/| / |g')
+            configure_opencode "$ENDPOINT" "$SERVED_MODEL_ID" "$DISPLAY_NAME (RamaLama)"
+            gum style --foreground 212 "💻 Launching OpenCode..."
+            dry_run_cmd "opencode $*"
+            ;;
+        "Goose CLI")
+            gum style --foreground 212 "🦢 Launching Goose CLI..."
+            dry_run_cmd "GOOSE_PROVIDER=openai GOOSE_MODEL=${SERVED_MODEL_ID} OPENAI_HOST=${ENDPOINT} OPENAI_API_KEY=sk-no-key-required goose session"
+            ;;
+        "Only Start Server")
+            gum style --foreground 121 "✅ Server started. API is available at ${ENDPOINT}/v1"
+            return
+            ;;
     esac
-else
-    TOOLS=("OpenCode" "Goose CLI" "Only Start Server" "Suggest Models (llmfit)")
-    SELECTED_TOOL=$(printf "%s\n" "${TOOLS[@]}" | gum choose --header "Select a tool to launch")
-    [ -z "$SELECTED_TOOL" ] && exit 0
-fi
 
-if [ "$SELECTED_TOOL" = "Suggest Models (llmfit)" ]; then
-    suggest_models_llmfit
-    exit 0
-fi
-
-# -----------------------------------------------------------------------
-# Check if ramalama is running with the correct image
-# -----------------------------------------------------------------------
-if [ -n "$REMOTE_ENDPOINT" ] && ! curl -sf "${REMOTE_ENDPOINT}/health" >/dev/null 2>&1; then
-    gum style --foreground 196 "❌ Cannot reach ramalama at ${REMOTE_ENDPOINT} — is the server running and reachable?"
-    exit 1
-fi
-
-if ! is_ramalama_running; then
-    if [ -n "$REMOTE_ENDPOINT" ]; then
-        # Should not be reached (checked above), but guard just in case.
-        echo "❌ Remote endpoint ${REMOTE_ENDPOINT} not healthy." && exit 1
-    fi
-    if run_cmd "ramalama ps --noheading" | grep -q "${CONTAINER_NAME}"; then
-        gum style --foreground 212 "🔄 Restarting RamaLama with optimized Strix Halo toolbox..."
-        run_cmd "ramalama stop ${CONTAINER_NAME}"
-        sleep 2
-    fi
-
-    # 2. Model Selection from pulled models
-    MODELS_JSON=$(get_models_json)
-    MODEL_NAMES=$(echo "$MODELS_JSON" | jq -r '.[].name // empty')
-
-    if [ -z "$MODEL_NAMES" ]; then
-        echo "❌ No RamaLama models found on $([ -n "$REMOTE_HOST" ] && echo "$REMOTE_HOST" || echo "local system")."
-        if command -v llmfit &>/dev/null; then
-            if $DRY_RUN || gum confirm "Run llmfit to find & pull a recommended model?"; then
-                suggest_models_llmfit
-            fi
-        fi
-        exit 1
-    fi
-
-    if [ -n "$CLI_MODEL" ]; then
-        # Validate the flag-supplied model exists in ramalama list
-        if echo "$MODEL_NAMES" | grep -qF "$CLI_MODEL"; then
-            SELECTED_MODEL="$CLI_MODEL"
-        else
-            echo "❌ Model not found in ramalama list: $CLI_MODEL"
-            echo "Available models:"
-            echo "$MODEL_NAMES" | sed 's/^/  /'
-            exit 1
-        fi
-    else
-        # Interactive: show size alongside name, default model floated to top
-        MODELS_WITH_SIZE=$(echo "$MODELS_JSON" | jq -r '.[] | "\(.name)  (\((.size / 1073741824) | floor)GB)"')
-        DEFAULT_LINE=$(echo "$MODELS_WITH_SIZE" | grep -F "$DEFAULT_MODEL" | head -1)
-        if [ -n "$DEFAULT_LINE" ]; then
-            OTHER_LINES=$(echo "$MODELS_WITH_SIZE" | grep -vF "$DEFAULT_MODEL")
-            MODELS_WITH_SIZE=$(printf "%s\n%s" "$DEFAULT_LINE" "$OTHER_LINES")
-        fi
-        SELECTED_LINE=$(echo "$MODELS_WITH_SIZE" | gum choose --header "Select a model to serve  [default: gemma-4-31B-it Q4_K_M]")
-        [ -z "$SELECTED_LINE" ] && exit 1
-        SELECTED_MODEL=$(echo "$SELECTED_LINE" | sed 's/  (.*//')
-    fi
-
-    MODEL_SIZE_BYTES=$(echo "$MODELS_JSON" | jq -r --arg n "$SELECTED_MODEL" '.[] | select(.name == $n) | .size')
-    MODEL_SIZE_GB=$(( MODEL_SIZE_BYTES / 1024 / 1024 / 1024 ))
-    REQUIRED_GB=$(( MODEL_SIZE_GB + 4 ))
-
-    CTX_SIZE=$(get_ctx_size "$SELECTED_MODEL")
-    echo "📐 Context window for ${SELECTED_MODEL}: ${CTX_SIZE} tokens"
-
-    # --- Memory gate: check against GTT TOTAL (BIOS-allocated GPU pool, e.g. 96GB) ---
-    # We use total, not available, because llama.cpp manages its own allocation.
-    detect_gtt
-
-    if [ "$MODEL_SIZE_GB" -gt "$GTT_TOTAL_GB" ]; then
-        gum style --border double --border-foreground 196 --margin "1" --padding "1" \
-            "🚫 MODEL TOO LARGE FOR GPU POOL" \
-            "Model size:       ${MODEL_SIZE_GB}GB" \
-            "GPU pool (GTT):   ${GTT_TOTAL_GB}GB  (${GTT_AVAIL_GB}GB free)" \
-            "This model will NOT load. Select a smaller model or increase VRAM in BIOS."
-
-        if command -v llmfit &>/dev/null && gum confirm "Show llmfit-recommended models that DO fit?"; then
-            suggest_models_llmfit
-        fi
-        exit 1
-    fi
-
-    check_resources "$REQUIRED_GB"
-
-    echo "🚀 Starting RamaLama with ${SELECTED_MODEL}..."
-    if [[ "$SELECTED_MODEL" == "$DEFAULT_MODEL" ]] && systemctl --user list-unit-files --quiet "$QUADLET_SERVICE" &>/dev/null; then
-        # Use the persistent quadlet service for the default model so it survives
-        # tool exits and auto-restarts after OOM kills.
-        dry_run_cmd "systemctl --user start '${QUADLET_SERVICE}'"
-    else
-        # USE_IMAGE: set by detect_hardware() for Strix Halo; empty lets ramalama
-        # pick the right image for NVIDIA/Intel/standard AMD automatically.
-        # EXTRA_SERVE_FLAGS: hardware-tuned runtime flags (set by detect_hardware).
-        local image_flag=""
-        [ -n "$USE_IMAGE" ] && image_flag="--image ${USE_IMAGE}"
-        dry_run_cmd "run_cmd 'ramalama serve --detach --name ${CONTAINER_NAME} ${image_flag} -c ${CTX_SIZE} --runtime-args=\"${EXTRA_SERVE_FLAGS}\" ${SELECTED_MODEL}'"
-    fi
-
-    # Important: Give podman a second to map the ports before detecting
-    sleep 2
-
-    ENDPOINT=$(get_ramalama_endpoint)
-    if [ -n "$REMOTE_HOST" ]; then
-        # For remote host, we assume the user has forwarded the correct matching port, or it uses the auto-assigned one.
-        # This gets messy if port mapping is dynamic, but we'll print the port.
-        REMOTE_PORT=$(echo "$ENDPOINT" | grep -o ':[0-9]\+$' | tr -d ':')
-        echo "ℹ️  Ensure port ${REMOTE_PORT} is accessible from ${REMOTE_HOST}"
-        ENDPOINT="http://${REMOTE_HOST}:${REMOTE_PORT}"
-    fi
-
-    # Wait for server (proper loop — not a subshell)
-    if ! $DRY_RUN && ! wait_for_server "$ENDPOINT"; then
-        echo "❌ Aborting — server failed to start."
-        exit 1
-    fi
-
-    if $DRY_RUN; then
-        SERVED_MODEL_ID="$SELECTED_MODEL"
-    else
-        # Get the actual model ID the server reports (may differ from ramalama name)
-        SERVED_MODEL_ID=$(get_model_id_from_endpoint "$ENDPOINT")
-        if [ -z "$SERVED_MODEL_ID" ]; then
-            SERVED_MODEL_ID="$SELECTED_MODEL"
-        fi
-    fi
-else
-    # Already running — detect the live model then decide whether to switch.
-    ENDPOINT=$(get_ramalama_endpoint)
-
-    if ! $DRY_RUN; then
-        RUNNING_MODEL=$(get_model_id_from_endpoint "$ENDPOINT")
-        if [ -z "$RUNNING_MODEL" ]; then
-            # Fallback: read model from container args
-            container_model=$(podman inspect --format='{{.Args}}' ${CONTAINER_NAME} 2>/dev/null | grep -o 'hf://[^ ]*' | tr -d ']')
-            RUNNING_MODEL="${container_model:-unknown-model}"
-        fi
-        echo "✅ RamaLama already running with: ${RUNNING_MODEL} on ${ENDPOINT}"
-
-        # Determine the desired model (flag or interactive picker).
-        if [ -n "$CLI_MODEL" ]; then
-            DESIRED_MODEL="$CLI_MODEL"
-        else
-            MODELS_JSON=$(get_models_json)
-            MODELS_WITH_SIZE=$(echo "$MODELS_JSON" | jq -r '.[] | "\(.name)  (\((.size / 1073741824) | floor)GB)"')
-            DEFAULT_LINE=$(echo "$MODELS_WITH_SIZE" | grep -F "$DEFAULT_MODEL" | head -1)
-            if [ -n "$DEFAULT_LINE" ]; then
-                OTHER_LINES=$(echo "$MODELS_WITH_SIZE" | grep -vF "$DEFAULT_MODEL")
-                MODELS_WITH_SIZE=$(printf "%s\n%s" "$DEFAULT_LINE" "$OTHER_LINES")
-            fi
-            SELECTED_LINE=$(echo "$MODELS_WITH_SIZE" | gum choose \
-                --header "Running: ${RUNNING_MODEL} — keep or switch?  [default: gemma-4-31B-it Q4_K_M]")
-            [ -z "$SELECTED_LINE" ] && exit 0
-            DESIRED_MODEL=$(echo "$SELECTED_LINE" | sed 's/  (.*//')
-        fi
-
-        if [[ "$DESIRED_MODEL" != "$RUNNING_MODEL" ]]; then
-            gum style --foreground 212 "🔄 Switching model: ${RUNNING_MODEL} → ${DESIRED_MODEL}"
+    # Cleanup: stop server when last tool instance exits (local only).
+    # Skip if the container is managed by systemd — let the service keep running.
+    # Skip entirely if we're pointed at a remote endpoint.
+    if [ -z "$REMOTE_HOST" ] && [ -z "$REMOTE_ENDPOINT" ]; then
+        sleep 1
+        if ! pgrep -f "bin/opencode|goose|claude|copilot" > /dev/null; then
             if systemctl --user is-active --quiet "$QUADLET_SERVICE" 2>/dev/null; then
-                dry_run_cmd "systemctl --user stop '${QUADLET_SERVICE}'"
+                echo "💤 Last instance closed. Leaving systemd service running (use: systemctl --user stop ${QUADLET_SERVICE})"
             else
+                echo "💤 Last instance closed. Stopping RamaLama..."
                 dry_run_cmd "ramalama stop '${CONTAINER_NAME}'"
             fi
-            sleep 2
-
-            SELECTED_MODEL="$DESIRED_MODEL"
-            CTX_SIZE=$(get_ctx_size "$SELECTED_MODEL")
-            echo "📐 Context window for ${SELECTED_MODEL}: ${CTX_SIZE} tokens"
-            detect_gtt
-
-            MODEL_SIZE_BYTES=$(echo "$MODELS_JSON" | jq -r --arg n "$SELECTED_MODEL" '.[] | select(.name == $n) | .size // 0')
-            MODEL_SIZE_GB=$(( MODEL_SIZE_BYTES / 1024 / 1024 / 1024 ))
-            REQUIRED_GB=$(( MODEL_SIZE_GB + 4 ))
-            check_resources "$REQUIRED_GB"
-
-            echo "🚀 Starting RamaLama with ${SELECTED_MODEL}..."
-            if [[ "$SELECTED_MODEL" == "$DEFAULT_MODEL" ]] && systemctl --user list-unit-files --quiet "$QUADLET_SERVICE" &>/dev/null; then
-                dry_run_cmd "systemctl --user start '${QUADLET_SERVICE}'"
-            else
-                local image_flag=""
-                [ -n "$USE_IMAGE" ] && image_flag="--image ${USE_IMAGE}"
-                dry_run_cmd "run_cmd 'ramalama serve --detach --name ${CONTAINER_NAME} ${image_flag} -c ${CTX_SIZE} --runtime-args=\"${EXTRA_SERVE_FLAGS}\" ${SELECTED_MODEL}'"
-            fi
-            sleep 2
-            ENDPOINT=$(get_ramalama_endpoint)
-            if ! $DRY_RUN && ! wait_for_server "$ENDPOINT"; then
-                echo "❌ Aborting — server failed to start after switch."
-                exit 1
-            fi
-        else
-            SELECTED_MODEL="$RUNNING_MODEL"
         fi
-
-        SERVED_MODEL_ID=$(get_model_id_from_endpoint "$ENDPOINT")
-        [ -z "$SERVED_MODEL_ID" ] && SERVED_MODEL_ID="$SELECTED_MODEL"
-    else
-        SERVED_MODEL_ID="${CLI_MODEL:-dry-run-model}"
-        SELECTED_MODEL="$SERVED_MODEL_ID"
     fi
-    CTX_SIZE=$(get_ctx_size "$SELECTED_MODEL")
-fi
+}
 
-# 3. Tool Execution
-case "$SELECTED_TOOL" in
-    "OpenCode")
-        # Build a user-friendly display name
-        DISPLAY_NAME=$(echo "$SERVED_MODEL_ID" | sed 's|hf://||; s|:| |g; s|/| / |g')
-        configure_opencode "$ENDPOINT" "$SERVED_MODEL_ID" "$DISPLAY_NAME (RamaLama)"
-        gum style --foreground 212 "💻 Launching OpenCode..."
-        dry_run_cmd "opencode $@"
-        ;;
-    "Goose CLI")
-        gum style --foreground 212 "🦢 Launching Goose CLI..."
-        dry_run_cmd "GOOSE_PROVIDER=openai GOOSE_MODEL=${SERVED_MODEL_ID} OPENAI_HOST=${ENDPOINT} OPENAI_API_KEY=sk-no-key-required goose session"
-        ;;
-    "Only Start Server")
-        gum style --foreground 121 "✅ Server started. API is available at ${ENDPOINT}/v1"
-        exit 0
-        ;;
+# ============================================================================
+# usage
+# ============================================================================
+usage() {
+    cat <<EOF
+Usage: oramalama [--remote <url>] [--model <name>] [--dry-run] <subcommand> [args]
+
+Subcommands:
+  run [model]        Start interactive chat (pulls model if needed)
+  serve [model]      Start the inference server (detached)
+  launch             Start server + launch a coding tool (opencode, goose)
+  list               List downloaded models
+  pull [model]       Pull a model (suggests best fit if no model given)
+  ps                 Show running models
+  rm [model]         Remove a model
+  search             Search and recommend models via llmfit
+
+Global flags:
+  --remote <url>     Use a remote ramalama server (e.g. http://myserver:8080)
+  --model <name>     Model to use (skips interactive picker)
+  --dry-run          Print actions without executing them
+
+Config: ~/.config/oramalama/config (bash key=value)
+  RAMALAMA_ENDPOINT  Same as --remote
+  DEFAULT_MODEL      Override default model
+  DEFAULT_TOOL       Pre-select tool for launch (opencode, goose)
+EOF
+    exit 0
+}
+
+# ============================================================================
+# GLOBAL FLAG PARSING + SUBCOMMAND DISPATCH
+# ============================================================================
+
+SUBCOMMAND="launch"   # default
+DRY_RUN=false
+CLI_MODEL=""
+CLI_TOOL=""
+REMOTE_ENDPOINT="${RAMALAMA_ENDPOINT:-}"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --remote)   RAMALAMA_ENDPOINT="$2"; REMOTE_ENDPOINT="$2"; shift 2 ;;
+        --dry-run)  DRY_RUN=true; shift ;;
+        --model)    CLI_MODEL="$2"; shift 2 ;;
+        --help|-h)  usage ;;
+        --)         shift; break ;;
+        -*)         echo "Unknown flag: $1"; usage ;;
+        *)          SUBCOMMAND="$1"; shift; break ;;
+    esac
+done
+
+[ -z "$REMOTE_ENDPOINT" ] && detect_hardware
+
+case "$SUBCOMMAND" in
+    run)          cmd_run "$@" ;;
+    serve)        cmd_serve "$@" ;;
+    launch)       cmd_launch "$@" ;;
+    list|ls)      cmd_list "$@" ;;
+    pull)         cmd_pull "$@" ;;
+    ps)           cmd_ps "$@" ;;
+    rm)           cmd_rm "$@" ;;
+    search)       cmd_search "$@" ;;
+    help|--help)  usage ;;
+    *)            echo "❌ Unknown subcommand: $SUBCOMMAND"; usage ;;
 esac
-
-# Cleanup: stop server when last tool instance exits (local only).
-# Skip if the container is managed by systemd — let the service keep running.
-# Skip entirely if we're pointed at a remote endpoint.
-if [ -z "$REMOTE_HOST" ] && [ -z "$REMOTE_ENDPOINT" ]; then
-    sleep 1
-    if ! pgrep -f "bin/opencode|goose|claude|copilot" > /dev/null; then
-        if systemctl --user is-active --quiet "$QUADLET_SERVICE" 2>/dev/null; then
-            echo "💤 Last instance closed. Leaving systemd service running (use: systemctl --user stop ${QUADLET_SERVICE})"
-        else
-            echo "💤 Last instance closed. Stopping RamaLama..."
-            dry_run_cmd "ramalama stop '${CONTAINER_NAME}'"
-        fi
-    fi
-fi

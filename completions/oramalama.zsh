@@ -1,0 +1,51 @@
+#compdef oramalama opencode-rl
+
+_oramalama() {
+    local -a subcommands
+    subcommands=(
+        'run:Start interactive chat with a model'
+        'serve:Start the inference server'
+        'launch:Start server and launch a coding tool'
+        'list:List downloaded models'
+        'pull:Pull a model from a registry'
+        'ps:Show running models'
+        'rm:Remove a model'
+        'search:Search and recommend models'
+    )
+
+    local -a global_opts
+    global_opts=(
+        '--remote[Use remote ramalama server]:url:'
+        '--model[Model to use]:model:->models'
+        '--dry-run[Print without executing]'
+        '--help[Show help]'
+    )
+
+    case $state in
+        models)
+            local -a models
+            models=(${(f)"$(ramalama list --json 2>/dev/null | jq -r '.[].name' 2>/dev/null)"})
+            _describe 'models' models
+            ;;
+        *)
+            _arguments $global_opts \
+                ': :->subcommand' \
+                '*:: :->args'
+            case $state in
+                subcommand) _describe 'subcommands' subcommands ;;
+                args)
+                    case $words[1] in
+                        run|serve|pull|rm)
+                            _arguments ':model:->models'
+                            ;;
+                        launch)
+                            _arguments '--tool[Tool to launch]:(opencode goose server)'
+                            ;;
+                    esac
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_oramalama
