@@ -499,23 +499,75 @@ if ! is_ramalama_running; then
         fi
     fi
 else
-    # Already running — detect model from live API
+    # Already running — detect the live model then decide whether to switch.
     ENDPOINT=$(get_ramalama_endpoint)
 
     if ! $DRY_RUN; then
-        SERVED_MODEL_ID=$(get_model_id_from_endpoint "$ENDPOINT")
-        if [ -n "$SERVED_MODEL_ID" ]; then
-            SELECTED_MODEL="$SERVED_MODEL_ID"
-            echo "✅ RamaLama already running with: ${SERVED_MODEL_ID} on ${ENDPOINT}"
-        else
-            echo "⚠️  RamaLama is supposedly running, but couldn't fetch model from ${ENDPOINT}/v1/models"
-            # Fallback to checking the container args
+        RUNNING_MODEL=$(get_model_id_from_endpoint "$ENDPOINT")
+        if [ -z "$RUNNING_MODEL" ]; then
+            # Fallback: read model from container args
             container_model=$(podman inspect --format='{{.Args}}' ${CONTAINER_NAME} 2>/dev/null | grep -o 'hf://[^ ]*' | tr -d ']')
-            SERVED_MODEL_ID="${container_model:-unknown-model}"
-            SELECTED_MODEL="$SERVED_MODEL_ID"
+            RUNNING_MODEL="${container_model:-unknown-model}"
         fi
+        echo "✅ RamaLama already running with: ${RUNNING_MODEL} on ${ENDPOINT}"
+
+        # Determine the desired model (flag or interactive picker).
+        if [ -n "$CLI_MODEL" ]; then
+            DESIRED_MODEL="$CLI_MODEL"
+        else
+            MODELS_JSON=$(get_models_json)
+            MODELS_WITH_SIZE=$(echo "$MODELS_JSON" | jq -r '.[] | "\(.name)  (\((.size / 1073741824) | floor)GB)"')
+            DEFAULT_LINE=$(echo "$MODELS_WITH_SIZE" | grep -F "$DEFAULT_MODEL" | head -1)
+            if [ -n "$DEFAULT_LINE" ]; then
+                OTHER_LINES=$(echo "$MODELS_WITH_SIZE" | grep -vF "$DEFAULT_MODEL")
+                MODELS_WITH_SIZE=$(printf "%s\n%s" "$DEFAULT_LINE" "$OTHER_LINES")
+            fi
+            SELECTED_LINE=$(echo "$MODELS_WITH_SIZE" | gum choose \
+                --header "Running: ${RUNNING_MODEL} — keep or switch?  [default: gemma-4-31B-it Q4_K_M]")
+            [ -z "$SELECTED_LINE" ] && exit 0
+            DESIRED_MODEL=$(echo "$SELECTED_LINE" | sed 's/  (.*//')
+        fi
+
+        if [[ "$DESIRED_MODEL" != "$RUNNING_MODEL" ]]; then
+            gum style --foreground 212 "🔄 Switching model: ${RUNNING_MODEL} → ${DESIRED_MODEL}"
+            if systemctl --user is-active --quiet "$QUADLET_SERVICE" 2>/dev/null; then
+                dry_run_cmd "systemctl --user stop '${QUADLET_SERVICE}'"
+            else
+                dry_run_cmd "ramalama stop '${CONTAINER_NAME}'"
+            fi
+            sleep 2
+
+            SELECTED_MODEL="$DESIRED_MODEL"
+            CTX_SIZE=$(get_ctx_size "$SELECTED_MODEL")
+            echo "📐 Context window for ${SELECTED_MODEL}: ${CTX_SIZE} tokens"
+            detect_gtt
+
+            MODEL_SIZE_BYTES=$(echo "$MODELS_JSON" | jq -r --arg n "$SELECTED_MODEL" '.[] | select(.name == $n) | .size // 0')
+            MODEL_SIZE_GB=$(( MODEL_SIZE_BYTES / 1024 / 1024 / 1024 ))
+            REQUIRED_GB=$(( MODEL_SIZE_GB + 4 ))
+            check_resources "$REQUIRED_GB"
+
+            echo "🚀 Starting RamaLama (Vulkan) with ${SELECTED_MODEL}..."
+            if [[ "$SELECTED_MODEL" == "$DEFAULT_MODEL" ]] && systemctl --user list-unit-files --quiet "$QUADLET_SERVICE" &>/dev/null; then
+                dry_run_cmd "systemctl --user start '${QUADLET_SERVICE}'"
+            else
+                dry_run_cmd "run_cmd 'ramalama serve --detach --name ${CONTAINER_NAME} --image ${STRIX_IMAGE} -c ${CTX_SIZE} --runtime-args=\"--jinja --parallel 1 --cache-ram 0\" ${SELECTED_MODEL}'"
+            fi
+            sleep 2
+            ENDPOINT=$(get_ramalama_endpoint)
+            if ! $DRY_RUN && ! wait_for_server "$ENDPOINT"; then
+                echo "❌ Aborting — server failed to start after switch."
+                exit 1
+            fi
+        else
+            SELECTED_MODEL="$RUNNING_MODEL"
+        fi
+
+        SERVED_MODEL_ID=$(get_model_id_from_endpoint "$ENDPOINT")
+        [ -z "$SERVED_MODEL_ID" ] && SERVED_MODEL_ID="$SELECTED_MODEL"
     else
         SERVED_MODEL_ID="${CLI_MODEL:-dry-run-model}"
+        SELECTED_MODEL="$SERVED_MODEL_ID"
     fi
     CTX_SIZE=$(get_ctx_size "$SELECTED_MODEL")
 fi
