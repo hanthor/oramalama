@@ -10,13 +10,15 @@ oramalama [--remote <url>] [--model <name>] [--dry-run] <subcommand>
 
 ## Features
 
-- **ollama-style subcommands** — `run`, `serve`, `launch`, `list`, `pull`, `ps`, `stop`, `show`, `rm`, `search`
-- **Interactive REPL** — streaming chat with slash commands (`/set system`, `/save`, `/load`, `/clear`, …)
+- **ollama-style subcommands** — `run`, `serve`, `launch`, `list`, `pull`, `ps`, `stop`, `show`, `rm`, `search`, `discover`
+- **Interactive REPL** — streaming chat with slash commands (`/set system`, `/save`, `/load`, `/clear`, `/switch`, …)
 - **Thinking mode** — `--think` surfaces model reasoning; `--hidethinking` strips `<think>` blocks
 - **tok/s stats** — `--verbose` prints timing after every response
 - **Hardware auto-detection** — Strix Halo (AMD Ryzen AI Max) detected automatically; ramalama picks the right image for NVIDIA / standard AMD / CPU on all other hardware
-- **Remote inference** — point at any ramalama server over Tailscale / LAN with `--remote`
-- **llmfit integration** — `oramalama search` recommends models that fit your GPU
+- **Network discovery** — `oramalama discover` scans LAN + Tailscale for ramalama servers, deduplicates multi-IP results, and lets you connect or switch models remotely
+- **Remote inference** — point at any ramalama server over Tailscale / LAN with `--remote`; SSH-based remote model switching built in
+- **llmfit integration** — `oramalama search` recommends models that fit your GPU; press `i` in any model picker for a full hardware-fit panel
+- **Open WebUI** — ramalama bundles Open WebUI; `oramalama launch --tool open-webui` starts it instantly
 - **Full tool ecosystem** — `oramalama launch` supports 11 tools across 3 categories:
   - *Coding:* OpenCode, Goose CLI, VS Code (Continue/Cline)
   - *Web UIs:* llama.cpp built-in, Open WebUI, AnythingLLM, NextChat, Lobe Chat, big-AGI
@@ -43,6 +45,7 @@ bash install.sh --uninstall         # remove
 | `jq` | ✅ | https://jqlang.github.io/jq/download/ |
 | `curl` | ✅ | system package manager |
 | `llmfit` | optional | https://github.com/jmorganca/llmfit |
+| `nmap` | optional (faster discovery) | system package manager |
 | `opencode` | optional | https://opencode.ai |
 | `goose` | optional | https://block.github.io/goose/ |
 
@@ -79,7 +82,8 @@ Starts the inference server (if not already running) and opens a streaming REPL.
 | `/clear` | Wipe conversation history |
 | `/save <name>` | Save session to `~/.config/oramalama/sessions/<name>` |
 | `/load <name>` | Restore a saved session |
-| `/show` | Print current model, endpoint, system prompt, params |
+| `/show` | Print current model, endpoint, SSH host, system prompt, params |
+| `/switch` | Switch the running model (SSH for remote, restart for local) |
 | `/bye` | Exit |
 
 ---
@@ -197,6 +201,31 @@ oramalama show hf://unsloth/gemma-4-31B-it-GGUF:Q4_K_M
 ```
 
 Displays architecture, quantization, size, context window. Shows endpoint if currently running.
+
+If `llmfit` is installed, also shows a hardware-fit panel: memory required, estimated tok/s, fit level (🟢 Perfect / 🟡 Tight / 🔴 Too large), score breakdown, and GGUF sources.
+
+---
+
+### `discover` — scan network for ramalama servers
+
+```bash
+oramalama discover
+```
+
+Scans the local /24 subnet and all Tailscale peers for running ramalama-compatible API endpoints (ports 8080, 11434, 8081). Results are deduplicated by model fingerprint so the same server appearing on multiple IPs (LAN + Tailscale + WiFi) shows as one entry with a `(+N IP)` badge.
+
+After selecting a server you can:
+- **Connect** — sets `--remote` for the current session
+- **Switch model** (via SSH) — lists models on the remote machine and restarts the server with your selection
+
+If no local server is running and no `--remote` is set, oramalama will offer to run discovery automatically.
+
+**Slash commands added for remote sessions:**
+
+| Command | Effect |
+|---|---|
+| `/switch` | Switch the model on the current server (remote SSH or local restart) |
+| `/show` | Now also prints the SSH host when connected remotely |
 
 ---
 
@@ -324,8 +353,13 @@ oramalama --remote http://karnataka:8080 launch --tool opencode
 # See what's running
 oramalama ps
 
-# Show metadata for the default model
+# Show metadata + llmfit hardware-fit panel for the default model
 oramalama show
+
+# Press 'i' in any model picker to see llmfit hardware-fit info inline
+
+# Scan LAN + Tailscale for remote ramalama servers
+oramalama discover
 
 # Pull a model recommended for your GPU
 oramalama search

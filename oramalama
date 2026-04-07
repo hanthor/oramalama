@@ -348,23 +348,159 @@ configure_opencode() {
 }
 
 # ---------------------------------------------------------------------------
+# _llmfit_resolve_name <ramalama_model>
+# Converts a ramalama model name (hf://provider/Name-GGUF:Q4_K_M) to llmfit
+# JSON info by trying progressively looser name matches.
+# Prints JSON to stdout; returns 1 on failure.
+# ---------------------------------------------------------------------------
+_llmfit_resolve_name() {
+    local model="$1"
+    command -v llmfit &>/dev/null || return 1
+
+    # Strip hf:// prefix and :QUANT suffix → e.g. "unsloth/gemma-4-31B-it-GGUF"
+    local stripped
+    stripped=$(echo "$model" | sed 's|hf://||; s|:[^/]*$||')
+
+    local base="${stripped##*/}"
+    local info
+    for candidate in \
+            "$stripped" \
+            "${stripped%-GGUF}" \
+            "$base" \
+            "${base%-GGUF}" ; do
+        [ -z "$candidate" ] && continue
+        info=$(llmfit info "$candidate" --json 2>/dev/null)
+        if echo "$info" | jq -e '.models[0]' >/dev/null 2>&1; then
+            echo "$info"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# _show_llmfit_panel <ramalama_model>
+# Fetches llmfit info and renders a rich gum panel.
+# ---------------------------------------------------------------------------
+_show_llmfit_panel() {
+    local model="$1"
+    command -v llmfit &>/dev/null || { echo "ℹ️  Install llmfit for model info"; return; }
+
+    local info
+    info=$(_llmfit_resolve_name "$model") || {
+        gum style --foreground 245 "ℹ️  No llmfit data found for ${model##*/}"
+        return
+    }
+
+    local m; m=$(echo "$info" | jq '.models[0]')
+
+    local name provider params use_case category license released
+    name=$(     echo "$m" | jq -r '.name              // "—"')
+    provider=$( echo "$m" | jq -r '.provider          // "—"')
+    params=$(   echo "$m" | jq -r '.parameter_count   // "—"')
+    use_case=$( echo "$m" | jq -r '.use_case          // "—"')
+    category=$( echo "$m" | jq -r '.category          // "—"')
+    license=$(  echo "$m" | jq -r '.license           // "Unknown"')
+    released=$( echo "$m" | jq -r '.release_date      // "Unknown"')
+
+    local fit run_mode tps mem_gb mem_pct ctx best_quant score
+    fit=$(       echo "$m" | jq -r '.fit_level         // "—"')
+    run_mode=$(  echo "$m" | jq -r '.run_mode          // "—"')
+    tps=$(       echo "$m" | jq -r '.estimated_tps     // "—"')
+    mem_gb=$(    echo "$m" | jq -r '.memory_required_gb // "—"')
+    mem_pct=$(   echo "$m" | jq -r '.utilization_pct   // "—"')
+    ctx=$(       echo "$m" | jq -r '.context_length    // "—"')
+    best_quant=$(echo "$m" | jq -r '.best_quant        // "—"')
+    score=$(     echo "$m" | jq -r '.score             // "—"')
+
+    local q_quality q_speed q_fit q_ctx
+    q_quality=$(echo "$m" | jq -r '.score_components.quality // "—"')
+    q_speed=$(  echo "$m" | jq -r '.score_components.speed   // "—"')
+    q_fit=$(    echo "$m" | jq -r '.score_components.fit     // "—"')
+    q_ctx=$(    echo "$m" | jq -r '.score_components.context // "—"')
+
+    # Fit colour: green=perfect, yellow=tight, red=too large
+    local fit_sym="🟢"; [[ "$fit" == *"Tight"* ]] && fit_sym="🟡"; [[ "$fit" == *"Too"* ]] && fit_sym="🔴"
+
+    # GGUF sources (up to 3) and notes (up to 4)
+    local gguf_lines notes_lines
+    mapfile -t gguf_lines < <(echo "$m" | jq -r '.gguf_sources[]? | "  • \(.provider) → https://huggingface.co/\(.repo)"' 2>/dev/null | head -3)
+    mapfile -t notes_lines < <(echo "$m" | jq -r '.notes[]?' 2>/dev/null | sed 's/^/  • /' | head -4)
+
+    local lines=(
+        "$(gum style --bold --foreground 33 "${name}")"
+        ""
+        "$(printf "  %-16s %s" "Provider:"    "$provider")"
+        "$(printf "  %-16s %s" "Parameters:"  "$params")"
+        "$(printf "  %-16s %s" "Category:"    "$category")"
+        "$(printf "  %-16s %s" "Use case:"    "$use_case")"
+        "$(printf "  %-16s %s" "License:"     "$license")"
+        "$(printf "  %-16s %s" "Released:"    "$released")"
+        ""
+        "$(gum style --bold "  Hardware fit on this system:")"
+        "$(printf "  %-16s %s %s" "Fit:"       "$fit_sym" "$fit")"
+        "$(printf "  %-16s %s" "Run mode:"    "$run_mode")"
+        "$(printf "  %-16s %s tok/s" "Speed est.:" "$tps")"
+        "$(printf "  %-16s %s GB  (%s%%)" "VRAM needed:" "$mem_gb" "$mem_pct")"
+        "$(printf "  %-16s %s tokens" "Context:"    "$ctx")"
+        "$(printf "  %-16s %s  (best for hw: %s)" "Quant:" "—" "$best_quant")"
+        ""
+        "$(gum style --bold "  Score: ${score}/100")"
+        "  Quality: ${q_quality}   Speed: ${q_speed}   Fit: ${q_fit}   Context: ${q_ctx}"
+    )
+    if [ ${#gguf_lines[@]} -gt 0 ]; then
+        lines+=("" "$(gum style --bold "  GGUF Sources:")" "${gguf_lines[@]}")
+    fi
+    if [ ${#notes_lines[@]} -gt 0 ]; then
+        lines+=("" "$(gum style --bold "  Notes:")" "${notes_lines[@]}")
+    fi
+
+    gum style --border rounded --padding "1 3" --border-foreground 33 "${lines[@]}"
+}
+
+# ---------------------------------------------------------------------------
 # pick_model HEADER [models_json]
 # Prints selected model name to stdout; returns 1 if user cancels.
+# If llmfit is installed, selecting a model shows a "Use / Info / Back" menu
+# so the user can inspect before committing.
 # ---------------------------------------------------------------------------
 pick_model() {
     local header="$1"
     local models_json="${2:-$(get_models_json)}"
-    local models_with_size default_line other_lines selected_line
 
-    models_with_size=$(echo "$models_json" | jq -r '.[] | "\(.name)  (\((.size//0)/1073741824|floor)GB)"')
-    default_line=$(echo "$models_with_size" | grep -F "$DEFAULT_MODEL" | head -1)
-    if [ -n "$default_line" ]; then
-        other_lines=$(echo "$models_with_size" | grep -vF "$DEFAULT_MODEL")
-        models_with_size=$(printf "%s\n%s" "$default_line" "$other_lines")
-    fi
-    selected_line=$(echo "$models_with_size" | gum choose --header "$header")
-    [ -z "$selected_line" ] && return 1
-    echo "$selected_line" | sed 's/  (.*//'
+    while true; do
+        local models_with_size default_line other_lines selected_line
+        models_with_size=$(echo "$models_json" | jq -r '.[] | "\(.name)  (\((.size//0)/1073741824|floor)GB)"')
+        default_line=$(echo "$models_with_size" | grep -F "$DEFAULT_MODEL" | head -1)
+        if [ -n "$default_line" ]; then
+            other_lines=$(echo "$models_with_size" | grep -vF "$DEFAULT_MODEL")
+            models_with_size=$(printf "%s\n%s" "$default_line" "$other_lines")
+        fi
+
+        selected_line=$(echo "$models_with_size" | gum choose --header "$header") || return 1
+        [ -z "$selected_line" ] && return 1
+        local selected_model
+        selected_model=$(echo "$selected_line" | sed 's/  (.*//')
+
+        # If llmfit available, loop on Use / Info / Back until resolved
+        if command -v llmfit &>/dev/null; then
+            local short_name
+            short_name=$(echo "$selected_model" | sed 's|hf://[^/]*/||; s|:.*||')
+            local action=""
+            while [[ "$action" != "▶"* ]]; do
+                # Show info panel first if user just came from "ℹ️"
+                [[ "$action" == "ℹ️"* ]] && _show_llmfit_panel "$selected_model"
+                action=$(printf "▶  Use: %s\nℹ️  Model info (llmfit)\n←  Back to model list\n" \
+                                "$short_name" \
+                         | gum choose --header "$(gum style --foreground 212 "Selected: ${short_name}")") || return 1
+                [[ "$action" == "←"* ]] && break  # go back to outer list loop
+            done
+            [[ "$action" == "←"* ]] && continue  # re-show the model list
+        fi
+
+        echo "$selected_model"
+        return 0
+    done
 }
 
 # ---------------------------------------------------------------------------
@@ -1031,6 +1167,9 @@ cmd_show() {
             gum style --foreground 121 "  🟢 Running → ${ep}"
         fi
     fi
+
+    # Append llmfit panel if available
+    _show_llmfit_panel "$model"
 }
 
 cmd_run() {
