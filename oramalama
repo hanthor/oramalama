@@ -749,14 +749,49 @@ cmd_discover() {
         return 1
     fi
 
-    # ── Enrich each endpoint with its loaded model list ──────────────────────
-    local menu_items=()
+    # ── Enrich + deduplicate by model fingerprint ────────────────────────────
+    # The same physical server often appears on multiple IPs (LAN + Tailscale).
+    # We group by sorted model list; keep the best IP per group, preferring
+    # Tailscale (100.x) > LAN, and show a "(+N IP)" hint for duplicates.
+    declare -A _ep_display  # endpoint -> "model1, model2"
+    declare -A _ep_key      # endpoint -> sorted fingerprint for grouping
     for ep in "${endpoints[@]}"; do
-        local models
-        models=$(curl -s --max-time 3 "${ep}/v1/models" \
-            | jq -r '[.data[].id] | join(", ")' 2>/dev/null || echo "?")
-        menu_items+=("${ep}  [${models}]")
+        local raw
+        raw=$(curl -s --max-time 3 "${ep}/v1/models" 2>/dev/null)
+        _ep_display[$ep]=$(echo "$raw" | jq -r '[.data[].id] | join(", ")' 2>/dev/null)
+        _ep_key[$ep]=$(echo "$raw" | jq -r '[.data[].id] | sort | join(",")' 2>/dev/null)
+        [ -z "${_ep_display[$ep]}" ] && _ep_display[$ep]="?"
+        # Unknown servers get a unique key so they're never wrongly merged
+        [ -z "${_ep_key[$ep]}" ] && _ep_key[$ep]="unknown-${ep}"
     done
+
+    declare -A _best    # fingerprint -> chosen (best) endpoint
+    declare -A _extras  # fingerprint -> count of alternative IPs hidden
+    for ep in "${endpoints[@]}"; do
+        local key="${_ep_key[$ep]}"
+        if [ -z "${_best[$key]+x}" ]; then
+            _best[$key]="$ep"
+            _extras[$key]=0
+        else
+            (( _extras[$key]++ )) || true
+            # Prefer Tailscale (100.x.x.x) — works across all networks
+            local cur="${_best[$key]}"
+            if [[ "$ep" =~ ^http://100\. ]] && ! [[ "$cur" =~ ^http://100\. ]]; then
+                _best[$key]="$ep"
+            fi
+        fi
+    done
+
+    local menu_items=()
+    for key in "${!_best[@]}"; do
+        local ep="${_best[$key]}"
+        local label="${ep}  [${_ep_display[$ep]}]"
+        local n="${_extras[$key]}"
+        [ "$n" -gt 0 ] && label+="  (+${n} IP)"
+        menu_items+=("$label")
+    done
+    # Sort for consistent ordering
+    mapfile -t menu_items < <(printf '%s\n' "${menu_items[@]}" | sort)
     menu_items+=("← Cancel")
 
     # ── Interactive picker ───────────────────────────────────────────────────
@@ -765,7 +800,7 @@ cmd_discover() {
         | gum choose --header "🖥️  Discovered servers — select one to connect:") || return 1
     [[ "$chosen" == "← Cancel" ]] && return 1
 
-    # Strip the "  [models]" annotation to get the bare URL
+    # Strip the "  [models]" and "(+N IP)" annotations to get the bare URL
     REMOTE_ENDPOINT="${chosen%%  *}"
     export REMOTE_ENDPOINT
     gum style --foreground 121 "✅ Connected → ${REMOTE_ENDPOINT}"
