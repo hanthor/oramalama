@@ -9,6 +9,8 @@ _oramalama() {
         'list:List downloaded models'
         'pull:Pull a model from a registry'
         'ps:Show running models'
+        'stop:Stop the running server or a container'
+        'show:Show model metadata (arch, quant, size, context)'
         'rm:Remove a model'
         'search:Search and recommend models'
     )
@@ -35,7 +37,7 @@ _oramalama() {
                 subcommand) _describe 'subcommands' subcommands ;;
                 args)
                     case $words[1] in
-                        run|serve|pull|rm)
+                        run|serve|pull|rm|show|stop)
                             _arguments ':model:->models'
                             ;;
                         launch)
