@@ -1,0 +1,699 @@
+#!/bin/bash
+
+# Configuration
+CONTAINER_NAME="ramalama-opencode"
+LOCAL_HOST="127.0.0.1"
+LOCAL_PORT="8080"
+OPENCODE_CONFIG="${HOME}/.config/opencode/opencode.json"
+GOOSE_CONFIG="${HOME}/.config/goose/config.yaml"
+
+# Default model: Gemma 4 31B (dense, best coding quality) at Q4_K_M quant (~18GB)
+DEFAULT_MODEL="hf://unsloth/gemma-4-31B-it-GGUF:Q4_K_M"
+
+# Systemd quadlet service name for the default model (persistent, auto-restart).
+# Other models still use ad-hoc ramalama serve.
+QUADLET_SERVICE="ramalama-opencode.service"
+
+# ---------------------------------------------------------------------------
+# User config file: ~/.config/oramalama/config
+# Loaded before CLI flags so flags always win. Supported keys (bash syntax):
+#   RAMALAMA_ENDPOINT=http://myserver:8080
+#   DEFAULT_TOOL=opencode
+#   DEFAULT_MODEL=hf://unsloth/gemma-4-31B-it-GGUF:Q4_K_M
+# ---------------------------------------------------------------------------
+USER_CONFIG="${HOME}/.config/oramalama/config"
+# shellcheck source=/dev/null
+[ -f "$USER_CONFIG" ] && source "$USER_CONFIG"
+
+# ---------------------------------------------------------------------------
+# detect_hardware: set USE_IMAGE and EXTRA_SERVE_FLAGS based on local GPU.
+#
+# Strix Halo (AMD Ryzen AI Max / RDNA 4) is an APU where the BIOS carves out
+# a large chunk of system RAM as GPU VRAM (typically >60 GB). No discrete GPU
+# currently ships with >60 GB VRAM, so this is a reliable heuristic.
+#
+# For all other hardware ramalama picks its own optimised image automatically
+# (CUDA for NVIDIA, ROCm for standard AMD dGPUs, CPU fallback, etc.), so we
+# just leave USE_IMAGE empty and let ramalama decide.
+# ---------------------------------------------------------------------------
+detect_hardware() {
+    USE_IMAGE=""          # empty = let ramalama choose the container image
+    EXTRA_SERVE_FLAGS="--jinja"
+    IS_STRIX_HALO=false
+
+    for card in /sys/class/drm/card*/device; do
+        local vendor_path="${card}/vendor"
+        local vram_path="${card}/mem_info_vram_total"
+        if [[ -f "$vendor_path" && -f "$vram_path" ]]; then
+            local vendor vram_bytes vram_gb
+            vendor=$(cat "$vendor_path" 2>/dev/null)
+            vram_bytes=$(cat "$vram_path" 2>/dev/null)
+            vram_gb=$(( vram_bytes / 1024 / 1024 / 1024 ))
+            # AMD vendor (0x1002) + >60 GB unified pool = Strix Halo APU
+            if [[ "$vendor" == "0x1002" && "$vram_gb" -gt 60 ]]; then
+                IS_STRIX_HALO=true
+                USE_IMAGE="docker.io/kyuz0/amd-strix-halo-toolboxes:vulkan-radv"
+                # Strix Halo has ~31 GB system RAM shared with the OS.
+                # Limit parallelism and disable prompt cache to prevent OOM kills.
+                EXTRA_SERVE_FLAGS="--jinja --parallel 1 --cache-ram 0"
+                return
+            fi
+        fi
+    done
+}
+# Strix Halo has ~113GB GPU pool but only ~31GB system RAM. KV cache lives on
+# GPU (fine), but host-side compute buffers and the process RSS live in system
+# RAM. Larger models leave less headroom for KV even on GPU, so we scale down.
+#   ~2B  / ~4B  → full 262K (model tiny, lots of room)
+#   ~7B  / ~8B  → 128K
+#   ~14B / ~13B → 64K
+#   ~27B / ~31B / ~34B → 32K  (e.g. Gemma 4 31B: 18GB model + ~4GB KV = 22GB)
+#   ~70B / ~72B → 32K  (model alone ~40GB, leave room for KV)
+#   ~122B / MoE giants → 16K  (model ~72GB, tight even on GPU)
+# Patterns use [-/_] separators to avoid e.g. *1B* matching "31B".
+# ---------------------------------------------------------------------------
+get_ctx_size() {
+    local model="$1"
+    case "$model" in
+        # MoE / very large — check active-param tags first
+        *A10B*|*A14B*|*A4B*|*122B*|*123B*|*110B*)           echo  16384 ;;
+        # ~70B dense
+        *[-/_]70B*|*[-/_]72B*|*[-/_]65B*)                   echo  32768 ;;
+        # ~27–34B dense (includes Gemma 4 31B)
+        *[-/_]27B*|*[-/_]30B*|*[-/_]31B*|*[-/_]32B*|*[-/_]34B*)  echo  32768 ;;
+        # ~12–14B
+        *[-/_]12B*|*[-/_]13B*|*[-/_]14B*)                   echo  65536 ;;
+        # ~7–8B and small multimodal (E4B)
+        *[-/_]7B*|*[-/_]8B*|*E4B*|*[-/_]4B*)                echo 131072 ;;
+        # ≤3B and small multimodal (E2B)
+        *E2B*|*[-/_]1B*|*[-/_]2B*|*[-/_]3B*)                echo 262144 ;;
+        # Unknown — conservative default
+        *)                                                    echo  32768 ;;
+    esac
+}
+
+# ---------------------------------------------------------------------------
+# CLI flags — allow fully non-interactive operation
+#   --tool <opencode|goose|claude|copilot|server|suggest>
+#   --model <ramalama-model-name>   (exact name from ramalama list)
+#   --suggest                       run llmfit suggestions and exit
+#   --dry-run                       print what would happen, make no changes
+#   --help
+# ---------------------------------------------------------------------------
+CLI_TOOL=""
+CLI_MODEL=""
+CLI_SUGGEST=false
+DRY_RUN=false
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [OPTIONS] [-- opencode-args...]
+
+Options:
+  --tool <name>     Tool to launch without prompting.
+                    Values: opencode, goose, server, suggest
+  --model <name>    Model to use (exact name from 'ramalama list').
+                    Example: "hf://unsloth/gemma-4-31B-it-GGUF:Q4_K_M"
+  --remote <url>    Connect to a remote ramalama server instead of starting
+                    a local one. Example: --remote http://myserver:8080
+  --suggest         Show llmfit model recommendations and exit.
+  --dry-run         Print actions without starting/stopping anything.
+  --help            Show this help.
+
+Environment / config (~/.config/oramalama/config):
+  RAMALAMA_ENDPOINT   Same as --remote, e.g. http://myserver:8080
+  DEFAULT_TOOL        Pre-select a tool (opencode, goose, server)
+  DEFAULT_MODEL       Override the default model
+EOF
+    exit 0
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --tool)       CLI_TOOL="$2";  shift 2 ;;
+        --model)      CLI_MODEL="$2"; shift 2 ;;
+        --remote)     RAMALAMA_ENDPOINT="$2"; shift 2 ;;
+        --suggest)    CLI_SUGGEST=true; shift ;;
+        --dry-run)    DRY_RUN=true; shift ;;
+        --help|-h)    usage ;;
+        --)           shift; break ;;
+        *)            break ;;
+    esac
+done
+
+# RAMALAMA_ENDPOINT: when set, skip all server lifecycle and point directly at
+# the given HTTP endpoint.
+REMOTE_ENDPOINT="${RAMALAMA_ENDPOINT:-}"
+
+# DEFAULT_TOOL from config can pre-select a tool (still overridable by --tool).
+[ -z "$CLI_TOOL" ] && CLI_TOOL="${DEFAULT_TOOL:-}"
+
+# Detect local hardware — sets USE_IMAGE and EXTRA_SERVE_FLAGS.
+# Skip when pointing at a remote endpoint (we don't serve locally).
+[ -z "$REMOTE_ENDPOINT" ] && detect_hardware
+
+# Helper: echo action but skip execution in dry-run mode
+dry_run_cmd() {
+    if $DRY_RUN; then
+        echo "[dry-run] $*"
+    else
+        eval "$@"
+    fi
+}
+
+# Function to run commands locally or via SSH
+run_cmd() {
+    if [ -n "$REMOTE_HOST" ]; then
+        ssh -o ConnectTimeout=5 "$REMOTE_HOST" "$@"
+    else
+        bash -c "$@"
+    fi
+}
+
+# Function to get models in JSON format.
+# When REMOTE_ENDPOINT is set, fetch from /v1/models HTTP API instead of
+# running ramalama locally — avoids needing ramalama/podman on the client.
+get_models_json() {
+    if [ -n "$REMOTE_ENDPOINT" ]; then
+        curl -s "${REMOTE_ENDPOINT}/v1/models" \
+            | jq '[.data[] | {name: .id, size: 0}]'
+    else
+        run_cmd "ramalama list --json"
+    fi
+}
+
+# Function to check if ramalama is running with the correct image.
+# For the default model, also considers the quadlet systemd service.
+is_ramalama_running() {
+    # Remote endpoint: check liveness via HTTP health endpoint.
+    if [ -n "$REMOTE_ENDPOINT" ]; then
+        curl -sf "${REMOTE_ENDPOINT}/health" > /dev/null 2>&1
+        return
+    fi
+    if [[ "$SELECTED_MODEL" == "$DEFAULT_MODEL" ]]; then
+        systemctl --user is-active --quiet "$QUADLET_SERVICE" && return 0
+    fi
+    run_cmd "ramalama ps --noheading" | grep -q "${CONTAINER_NAME}"
+}
+
+# ---------------------------------------------------------------------------
+# detect_gtt: read GTT total and available from sysfs (Strix Halo unified pool)
+# Sets GTT_TOTAL_GB and GTT_AVAIL_GB globals.
+# ---------------------------------------------------------------------------
+detect_gtt() {
+    GTT_TOTAL_GB=0
+    GTT_AVAIL_GB=0
+    for card in /sys/class/drm/card*/device; do
+        # Use mem_info_vram_total — reflects the BIOS VRAM allocation (e.g. 96GB on Strix Halo).
+        # mem_info_gtt_total only shows the GTT aperture (~15GB), NOT the full GPU pool.
+        VRAM_TOTAL_PATH="${card}/mem_info_vram_total"
+        VRAM_USED_PATH="${card}/mem_info_vram_used"
+        if [[ -f "$VRAM_TOTAL_PATH" && -f "$VRAM_USED_PATH" ]]; then
+            TOTAL_VRAM_BYTES=$(cat "$VRAM_TOTAL_PATH")
+            USED_VRAM_BYTES=$(cat "$VRAM_USED_PATH")
+            GTT_TOTAL_GB=$(( TOTAL_VRAM_BYTES / 1024 / 1024 / 1024 ))
+            GTT_AVAIL_GB=$(( (TOTAL_VRAM_BYTES - USED_VRAM_BYTES) / 1024 / 1024 / 1024 ))
+            return
+        fi
+    done
+    # Fallback: use system RAM
+    GTT_TOTAL_GB=$(free -g | awk '/^Mem:/{print $2}')
+    GTT_AVAIL_GB=$(free -g | awk '/^Mem:/{print $7}')
+}
+
+# ---------------------------------------------------------------------------
+# get_ramalama_endpoint: Returns the base endpoint URL, detecting actual port 
+# ---------------------------------------------------------------------------
+get_ramalama_endpoint() {
+    # Direct remote endpoint — use as-is.
+    if [ -n "$REMOTE_ENDPOINT" ]; then
+        echo "$REMOTE_ENDPOINT"
+        return
+    fi
+
+    local host_base="http://${LOCAL_HOST}"
+    local port="${LOCAL_PORT}"
+    
+    # If a container named $CONTAINER_NAME exists, try to get its mapped port
+    if run_cmd "podman inspect --format='{{.State.Status}}' ${CONTAINER_NAME} 2>/dev/null" | grep -q 'running'; then
+        local mapped_port
+        mapped_port=$(run_cmd "podman port ${CONTAINER_NAME} 2>/dev/null" | grep -o ':[0-9]\+$' | head -n1 | tr -d ':')
+        if [ -n "$mapped_port" ]; then
+            port="$mapped_port"
+        fi
+    fi
+
+    echo "${host_base}:${port}"
+}
+
+# ---------------------------------------------------------------------------
+# check_resources: warn if available unified memory is less than required
+# ---------------------------------------------------------------------------
+check_resources() {
+    local required_gb=$1
+    [ -n "$REMOTE_HOST" ] && return     # skip for SSH remote
+    [ -n "$REMOTE_ENDPOINT" ] && return # skip for direct HTTP remote
+
+    detect_gtt
+    local AVAIL_GTT=$GTT_AVAIL_GB
+
+    if [ "$AVAIL_GTT" -lt "$required_gb" ]; then
+        gum style --border normal --margin "1" --padding "1" --border-foreground 212 \
+            "⚠️  LOW MEMORY DETECTED (Strix Halo Unified Pool)" \
+            "Available: ${AVAIL_GTT}GB  |  Required for Model: ${required_gb}GB"
+
+        if gum confirm "Do you want to kill some processes to free up RAM?"; then
+            SELECTION=$(ps axo pid,pmem,comm --sort=-pmem | head -n 21 | tail -n +2 | \
+                awk '{printf "%-7s | %-5s%% | %s\n", $1, $2, $3}' | \
+                gum choose --header "Select processes to kill (Esc to skip)" --no-limit)
+
+            if [ -n "$SELECTION" ]; then
+                PIDS=$(echo "$SELECTION" | awk '{print $1}')
+                for PID in $PIDS; do
+                    gum spin --spinner dot --title "Killing process $PID..." -- sleep 0.5
+                    kill -9 "$PID" 2>/dev/null && echo "✅ Killed $PID" || echo "❌ Failed to kill $PID"
+                done
+                check_resources "$required_gb"
+            fi
+        fi
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# wait_for_server: poll until the /v1/models endpoint responds or timeout
+# ---------------------------------------------------------------------------
+wait_for_server() {
+    local endpoint="${1}/v1/models"
+    local max_wait=120
+    local count=0
+
+    gum style --foreground 212 "⏳ Waiting for RamaLama server at ${endpoint}..."
+
+    while true; do
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${endpoint}" 2>/dev/null)
+        if [[ "$HTTP_CODE" == "200" ]]; then
+            gum style --foreground 121 "✅ RamaLama server is ready! (${count}s)"
+            return 0
+        fi
+        sleep 1
+        (( count++ ))
+        if [ "$count" -ge "$max_wait" ]; then
+            gum style --foreground 196 "❌ RamaLama server did not respond after ${max_wait}s (last HTTP ${HTTP_CODE})."
+            gum style --foreground 196 "   Check container logs: ramalama logs ${CONTAINER_NAME}"
+            return 1
+        fi
+        # Show progress every 10 seconds
+        if (( count % 10 == 0 )); then
+            gum style --foreground 212 "   Still waiting... (${count}s / ${max_wait}s, HTTP ${HTTP_CODE})"
+        fi
+    done
+}
+
+# ---------------------------------------------------------------------------
+# get_model_id_from_endpoint: derive a clean model id from the running server
+# ---------------------------------------------------------------------------
+get_model_id_from_endpoint() {
+    local endpoint="${1}/v1/models"
+    curl -s "${endpoint}" | jq -r '.data[0].id // empty' | \
+        sed 's|^/mnt/models/||; s|\.gguf$||'
+}
+
+# ---------------------------------------------------------------------------
+# configure_opencode: write the ramalama provider + model into opencode.json
+# The opencode openai-compatible provider expects:
+#   provider.<id>.models.<model-key> = { name: "..." }
+#   model = "<provider-id>/<model-key>"
+# The model-key must be exactly the model ID the server returns from /v1/models
+# ---------------------------------------------------------------------------
+configure_opencode() {
+    local base_endpoint="$1"
+    local model_id="$2"        # e.g. hf://unsloth/Qwen3-Coder-Next-GGUF:Q4_K_M
+    local model_display="$3"   # human-friendly name
+
+    [ -f "$OPENCODE_CONFIG" ] || return
+
+    local base_url="${base_endpoint}/v1"
+    # Legacy SSH remote: override with explicit host:port
+    [ -n "$REMOTE_HOST" ] && base_url="http://${REMOTE_HOST}:${LOCAL_PORT}/v1"
+
+    TEMP=$(mktemp --suffix=.json)
+
+    jq \
+        --arg key    "$model_id" \
+        --arg name   "$model_display" \
+        --arg base   "$base_url" \
+        --arg full   "ramalama/${model_id}" \
+        --argjson ctx "$CTX_SIZE" \
+        '
+        .model = $full |
+        .provider.ramalama = {
+          "name": "RamaLama (llama.cpp)",
+          "npm":  "@ai-sdk/openai-compatible",
+          "options": { "baseURL": $base },
+          "models": {
+            ($key): {
+              "_launch": true,
+              "name": $name,
+              "limit": { "context": $ctx, "output": 8192 }
+            }
+          }
+        }
+        ' \
+        "$OPENCODE_CONFIG" > "$TEMP" && mv "$TEMP" "$OPENCODE_CONFIG"
+
+    gum style --foreground 121 "📝 OpenCode configured → provider: ramalama / model: ${model_id}"
+}
+
+# ---------------------------------------------------------------------------
+# suggest_models_llmfit: use llmfit to recommend & optionally pull new models
+# ---------------------------------------------------------------------------
+suggest_models_llmfit() {
+    if ! command -v llmfit &>/dev/null; then
+        return
+    fi
+
+    # Read actual GTT total from sysfs — reflects BIOS VRAM allocation (e.g. 96GB)
+    # This is more accurate than system RAM which the OS sees after BIOS split.
+    detect_gtt
+    local MEM_FLAG="${GTT_TOTAL_GB}G"
+    gum style --foreground 212 "🤖 Querying llmfit for hardware-optimal models (Strix Halo, ${GTT_TOTAL_GB}GB GPU pool)..."
+
+    LLMFIT_JSON=$(llmfit \
+        --memory "${MEM_FLAG}" \
+        recommend \
+        --use-case coding \
+        --min-fit good \
+        -n 8 \
+        --json 2>/dev/null)
+
+    if [ -z "$LLMFIT_JSON" ]; then
+        gum style --foreground 196 "⚠️  llmfit did not return results."
+        return
+    fi
+
+    # Build a human-readable list: "name (Xgb, ~Y tok/s) [best_quant]"
+    SUGGESTIONS=$(echo "$LLMFIT_JSON" | jq -r '
+        .models[] |
+        "\(.name)  (\(.memory_required_gb | floor)GB, ~\(.estimated_tps | floor) tok/s, \(.best_quant))"
+    ')
+
+    gum style --bold "💡 llmfit recommendations for your hardware:"
+    echo "$SUGGESTIONS" | gum style --foreground 105
+
+    if gum confirm "Would you like to pull one of these recommended models via ramalama?"; then
+        SELECTED_LINE=$(echo "$SUGGESTIONS" | gum choose --header "Select a model to pull")
+        [ -z "$SELECTED_LINE" ] && return
+
+        # Extract original name (before the parenthetical suffix)
+        SELECTED_LLMFIT_NAME=$(echo "$SELECTED_LINE" | sed 's/  (.*//')
+
+        # Find best_quant for this model
+        BEST_QUANT=$(echo "$LLMFIT_JSON" | jq -r \
+            --arg n "$SELECTED_LLMFIT_NAME" \
+            '.models[] | select(.name == $n) | .best_quant')
+
+        # Find a gguf_source repo (prefer unsloth or bartowski)
+        GGUF_REPO=$(echo "$LLMFIT_JSON" | jq -r \
+            --arg n "$SELECTED_LLMFIT_NAME" \
+            '.models[] | select(.name == $n) | .gguf_sources[]
+             | select(.provider == "unsloth" or .provider == "bartowski")
+             | .repo' | head -1)
+
+        if [ -n "$GGUF_REPO" ]; then
+            PULL_REF="hf://${GGUF_REPO}:${BEST_QUANT}"
+        else
+            # No known GGUF — try huggingface generic path
+            PULL_REF="hf://${SELECTED_LLMFIT_NAME}:${BEST_QUANT}"
+        fi
+
+        gum style --foreground 212 "📥 Pulling ${PULL_REF} via ramalama..."
+        run_cmd "ramalama pull ${PULL_REF}" && \
+            gum style --foreground 121 "✅ Model pulled! Restart the script to use it." || \
+            gum style --foreground 196 "❌ Pull failed. Check ramalama pull output above."
+        exit 0
+    fi
+}
+
+# ===========================================================================
+# MAIN
+# ===========================================================================
+
+# Handle --suggest / Suggest Models mode
+if $CLI_SUGGEST; then
+    suggest_models_llmfit
+    exit 0
+fi
+
+# 1. Tool Selection
+if [ -n "$CLI_TOOL" ]; then
+    # Normalise flag value -> display name used by case statement
+    case "${CLI_TOOL,,}" in
+        opencode)          SELECTED_TOOL="OpenCode" ;;
+        goose)             SELECTED_TOOL="Goose CLI" ;;
+        server|only*)      SELECTED_TOOL="Only Start Server" ;;
+        suggest|llmfit)    suggest_models_llmfit; exit 0 ;;
+        *)  echo "❌ Unknown tool: $CLI_TOOL"; usage ;;
+    esac
+else
+    TOOLS=("OpenCode" "Goose CLI" "Only Start Server" "Suggest Models (llmfit)")
+    SELECTED_TOOL=$(printf "%s\n" "${TOOLS[@]}" | gum choose --header "Select a tool to launch")
+    [ -z "$SELECTED_TOOL" ] && exit 0
+fi
+
+if [ "$SELECTED_TOOL" = "Suggest Models (llmfit)" ]; then
+    suggest_models_llmfit
+    exit 0
+fi
+
+# -----------------------------------------------------------------------
+# Check if ramalama is running with the correct image
+# -----------------------------------------------------------------------
+if [ -n "$REMOTE_ENDPOINT" ] && ! curl -sf "${REMOTE_ENDPOINT}/health" >/dev/null 2>&1; then
+    gum style --foreground 196 "❌ Cannot reach ramalama at ${REMOTE_ENDPOINT} — is the server running and reachable?"
+    exit 1
+fi
+
+if ! is_ramalama_running; then
+    if [ -n "$REMOTE_ENDPOINT" ]; then
+        # Should not be reached (checked above), but guard just in case.
+        echo "❌ Remote endpoint ${REMOTE_ENDPOINT} not healthy." && exit 1
+    fi
+    if run_cmd "ramalama ps --noheading" | grep -q "${CONTAINER_NAME}"; then
+        gum style --foreground 212 "🔄 Restarting RamaLama with optimized Strix Halo toolbox..."
+        run_cmd "ramalama stop ${CONTAINER_NAME}"
+        sleep 2
+    fi
+
+    # 2. Model Selection from pulled models
+    MODELS_JSON=$(get_models_json)
+    MODEL_NAMES=$(echo "$MODELS_JSON" | jq -r '.[].name // empty')
+
+    if [ -z "$MODEL_NAMES" ]; then
+        echo "❌ No RamaLama models found on $([ -n "$REMOTE_HOST" ] && echo "$REMOTE_HOST" || echo "local system")."
+        if command -v llmfit &>/dev/null; then
+            if $DRY_RUN || gum confirm "Run llmfit to find & pull a recommended model?"; then
+                suggest_models_llmfit
+            fi
+        fi
+        exit 1
+    fi
+
+    if [ -n "$CLI_MODEL" ]; then
+        # Validate the flag-supplied model exists in ramalama list
+        if echo "$MODEL_NAMES" | grep -qF "$CLI_MODEL"; then
+            SELECTED_MODEL="$CLI_MODEL"
+        else
+            echo "❌ Model not found in ramalama list: $CLI_MODEL"
+            echo "Available models:"
+            echo "$MODEL_NAMES" | sed 's/^/  /'
+            exit 1
+        fi
+    else
+        # Interactive: show size alongside name, default model floated to top
+        MODELS_WITH_SIZE=$(echo "$MODELS_JSON" | jq -r '.[] | "\(.name)  (\((.size / 1073741824) | floor)GB)"')
+        DEFAULT_LINE=$(echo "$MODELS_WITH_SIZE" | grep -F "$DEFAULT_MODEL" | head -1)
+        if [ -n "$DEFAULT_LINE" ]; then
+            OTHER_LINES=$(echo "$MODELS_WITH_SIZE" | grep -vF "$DEFAULT_MODEL")
+            MODELS_WITH_SIZE=$(printf "%s\n%s" "$DEFAULT_LINE" "$OTHER_LINES")
+        fi
+        SELECTED_LINE=$(echo "$MODELS_WITH_SIZE" | gum choose --header "Select a model to serve  [default: gemma-4-31B-it Q4_K_M]")
+        [ -z "$SELECTED_LINE" ] && exit 1
+        SELECTED_MODEL=$(echo "$SELECTED_LINE" | sed 's/  (.*//')
+    fi
+
+    MODEL_SIZE_BYTES=$(echo "$MODELS_JSON" | jq -r --arg n "$SELECTED_MODEL" '.[] | select(.name == $n) | .size')
+    MODEL_SIZE_GB=$(( MODEL_SIZE_BYTES / 1024 / 1024 / 1024 ))
+    REQUIRED_GB=$(( MODEL_SIZE_GB + 4 ))
+
+    CTX_SIZE=$(get_ctx_size "$SELECTED_MODEL")
+    echo "📐 Context window for ${SELECTED_MODEL}: ${CTX_SIZE} tokens"
+
+    # --- Memory gate: check against GTT TOTAL (BIOS-allocated GPU pool, e.g. 96GB) ---
+    # We use total, not available, because llama.cpp manages its own allocation.
+    detect_gtt
+
+    if [ "$MODEL_SIZE_GB" -gt "$GTT_TOTAL_GB" ]; then
+        gum style --border double --border-foreground 196 --margin "1" --padding "1" \
+            "🚫 MODEL TOO LARGE FOR GPU POOL" \
+            "Model size:       ${MODEL_SIZE_GB}GB" \
+            "GPU pool (GTT):   ${GTT_TOTAL_GB}GB  (${GTT_AVAIL_GB}GB free)" \
+            "This model will NOT load. Select a smaller model or increase VRAM in BIOS."
+
+        if command -v llmfit &>/dev/null && gum confirm "Show llmfit-recommended models that DO fit?"; then
+            suggest_models_llmfit
+        fi
+        exit 1
+    fi
+
+    check_resources "$REQUIRED_GB"
+
+    echo "🚀 Starting RamaLama with ${SELECTED_MODEL}..."
+    if [[ "$SELECTED_MODEL" == "$DEFAULT_MODEL" ]] && systemctl --user list-unit-files --quiet "$QUADLET_SERVICE" &>/dev/null; then
+        # Use the persistent quadlet service for the default model so it survives
+        # tool exits and auto-restarts after OOM kills.
+        dry_run_cmd "systemctl --user start '${QUADLET_SERVICE}'"
+    else
+        # USE_IMAGE: set by detect_hardware() for Strix Halo; empty lets ramalama
+        # pick the right image for NVIDIA/Intel/standard AMD automatically.
+        # EXTRA_SERVE_FLAGS: hardware-tuned runtime flags (set by detect_hardware).
+        local image_flag=""
+        [ -n "$USE_IMAGE" ] && image_flag="--image ${USE_IMAGE}"
+        dry_run_cmd "run_cmd 'ramalama serve --detach --name ${CONTAINER_NAME} ${image_flag} -c ${CTX_SIZE} --runtime-args=\"${EXTRA_SERVE_FLAGS}\" ${SELECTED_MODEL}'"
+    fi
+
+    # Important: Give podman a second to map the ports before detecting
+    sleep 2
+
+    ENDPOINT=$(get_ramalama_endpoint)
+    if [ -n "$REMOTE_HOST" ]; then
+        # For remote host, we assume the user has forwarded the correct matching port, or it uses the auto-assigned one.
+        # This gets messy if port mapping is dynamic, but we'll print the port.
+        REMOTE_PORT=$(echo "$ENDPOINT" | grep -o ':[0-9]\+$' | tr -d ':')
+        echo "ℹ️  Ensure port ${REMOTE_PORT} is accessible from ${REMOTE_HOST}"
+        ENDPOINT="http://${REMOTE_HOST}:${REMOTE_PORT}"
+    fi
+
+    # Wait for server (proper loop — not a subshell)
+    if ! $DRY_RUN && ! wait_for_server "$ENDPOINT"; then
+        echo "❌ Aborting — server failed to start."
+        exit 1
+    fi
+
+    if $DRY_RUN; then
+        SERVED_MODEL_ID="$SELECTED_MODEL"
+    else
+        # Get the actual model ID the server reports (may differ from ramalama name)
+        SERVED_MODEL_ID=$(get_model_id_from_endpoint "$ENDPOINT")
+        if [ -z "$SERVED_MODEL_ID" ]; then
+            SERVED_MODEL_ID="$SELECTED_MODEL"
+        fi
+    fi
+else
+    # Already running — detect the live model then decide whether to switch.
+    ENDPOINT=$(get_ramalama_endpoint)
+
+    if ! $DRY_RUN; then
+        RUNNING_MODEL=$(get_model_id_from_endpoint "$ENDPOINT")
+        if [ -z "$RUNNING_MODEL" ]; then
+            # Fallback: read model from container args
+            container_model=$(podman inspect --format='{{.Args}}' ${CONTAINER_NAME} 2>/dev/null | grep -o 'hf://[^ ]*' | tr -d ']')
+            RUNNING_MODEL="${container_model:-unknown-model}"
+        fi
+        echo "✅ RamaLama already running with: ${RUNNING_MODEL} on ${ENDPOINT}"
+
+        # Determine the desired model (flag or interactive picker).
+        if [ -n "$CLI_MODEL" ]; then
+            DESIRED_MODEL="$CLI_MODEL"
+        else
+            MODELS_JSON=$(get_models_json)
+            MODELS_WITH_SIZE=$(echo "$MODELS_JSON" | jq -r '.[] | "\(.name)  (\((.size / 1073741824) | floor)GB)"')
+            DEFAULT_LINE=$(echo "$MODELS_WITH_SIZE" | grep -F "$DEFAULT_MODEL" | head -1)
+            if [ -n "$DEFAULT_LINE" ]; then
+                OTHER_LINES=$(echo "$MODELS_WITH_SIZE" | grep -vF "$DEFAULT_MODEL")
+                MODELS_WITH_SIZE=$(printf "%s\n%s" "$DEFAULT_LINE" "$OTHER_LINES")
+            fi
+            SELECTED_LINE=$(echo "$MODELS_WITH_SIZE" | gum choose \
+                --header "Running: ${RUNNING_MODEL} — keep or switch?  [default: gemma-4-31B-it Q4_K_M]")
+            [ -z "$SELECTED_LINE" ] && exit 0
+            DESIRED_MODEL=$(echo "$SELECTED_LINE" | sed 's/  (.*//')
+        fi
+
+        if [[ "$DESIRED_MODEL" != "$RUNNING_MODEL" ]]; then
+            gum style --foreground 212 "🔄 Switching model: ${RUNNING_MODEL} → ${DESIRED_MODEL}"
+            if systemctl --user is-active --quiet "$QUADLET_SERVICE" 2>/dev/null; then
+                dry_run_cmd "systemctl --user stop '${QUADLET_SERVICE}'"
+            else
+                dry_run_cmd "ramalama stop '${CONTAINER_NAME}'"
+            fi
+            sleep 2
+
+            SELECTED_MODEL="$DESIRED_MODEL"
+            CTX_SIZE=$(get_ctx_size "$SELECTED_MODEL")
+            echo "📐 Context window for ${SELECTED_MODEL}: ${CTX_SIZE} tokens"
+            detect_gtt
+
+            MODEL_SIZE_BYTES=$(echo "$MODELS_JSON" | jq -r --arg n "$SELECTED_MODEL" '.[] | select(.name == $n) | .size // 0')
+            MODEL_SIZE_GB=$(( MODEL_SIZE_BYTES / 1024 / 1024 / 1024 ))
+            REQUIRED_GB=$(( MODEL_SIZE_GB + 4 ))
+            check_resources "$REQUIRED_GB"
+
+            echo "🚀 Starting RamaLama with ${SELECTED_MODEL}..."
+            if [[ "$SELECTED_MODEL" == "$DEFAULT_MODEL" ]] && systemctl --user list-unit-files --quiet "$QUADLET_SERVICE" &>/dev/null; then
+                dry_run_cmd "systemctl --user start '${QUADLET_SERVICE}'"
+            else
+                local image_flag=""
+                [ -n "$USE_IMAGE" ] && image_flag="--image ${USE_IMAGE}"
+                dry_run_cmd "run_cmd 'ramalama serve --detach --name ${CONTAINER_NAME} ${image_flag} -c ${CTX_SIZE} --runtime-args=\"${EXTRA_SERVE_FLAGS}\" ${SELECTED_MODEL}'"
+            fi
+            sleep 2
+            ENDPOINT=$(get_ramalama_endpoint)
+            if ! $DRY_RUN && ! wait_for_server "$ENDPOINT"; then
+                echo "❌ Aborting — server failed to start after switch."
+                exit 1
+            fi
+        else
+            SELECTED_MODEL="$RUNNING_MODEL"
+        fi
+
+        SERVED_MODEL_ID=$(get_model_id_from_endpoint "$ENDPOINT")
+        [ -z "$SERVED_MODEL_ID" ] && SERVED_MODEL_ID="$SELECTED_MODEL"
+    else
+        SERVED_MODEL_ID="${CLI_MODEL:-dry-run-model}"
+        SELECTED_MODEL="$SERVED_MODEL_ID"
+    fi
+    CTX_SIZE=$(get_ctx_size "$SELECTED_MODEL")
+fi
+
+# 3. Tool Execution
+case "$SELECTED_TOOL" in
+    "OpenCode")
+        # Build a user-friendly display name
+        DISPLAY_NAME=$(echo "$SERVED_MODEL_ID" | sed 's|hf://||; s|:| |g; s|/| / |g')
+        configure_opencode "$ENDPOINT" "$SERVED_MODEL_ID" "$DISPLAY_NAME (RamaLama)"
+        gum style --foreground 212 "💻 Launching OpenCode..."
+        dry_run_cmd "opencode $@"
+        ;;
+    "Goose CLI")
+        gum style --foreground 212 "🦢 Launching Goose CLI..."
+        dry_run_cmd "GOOSE_PROVIDER=openai GOOSE_MODEL=${SERVED_MODEL_ID} OPENAI_HOST=${ENDPOINT} OPENAI_API_KEY=sk-no-key-required goose session"
+        ;;
+    "Only Start Server")
+        gum style --foreground 121 "✅ Server started. API is available at ${ENDPOINT}/v1"
+        exit 0
+        ;;
+esac
+
+# Cleanup: stop server when last tool instance exits (local only).
+# Skip if the container is managed by systemd — let the service keep running.
+# Skip entirely if we're pointed at a remote endpoint.
+if [ -z "$REMOTE_HOST" ] && [ -z "$REMOTE_ENDPOINT" ]; then
+    sleep 1
+    if ! pgrep -f "bin/opencode|goose|claude|copilot" > /dev/null; then
+        if systemctl --user is-active --quiet "$QUADLET_SERVICE" 2>/dev/null; then
+            echo "💤 Last instance closed. Leaving systemd service running (use: systemctl --user stop ${QUADLET_SERVICE})"
+        else
+            echo "💤 Last instance closed. Stopping RamaLama..."
+            dry_run_cmd "ramalama stop '${CONTAINER_NAME}'"
+        fi
+    fi
+fi
