@@ -16,14 +16,13 @@ Environment=HOME=/tmp
 Environment=HIP_VISIBLE_DEVICES=0
 # ramalama emits --no-jinja by default; --jinja (appended via runtime-args) overrides it.
 # Gemma 4 requires full Jinja2 template support or llama-server exits immediately.
-# 16K context (down from 32K) + no mmproj keeps RSS ~20-22GB on 31GB unified memory.
-# Removing --mmproj saves ~2.5GB — not needed for text-only OpenCode sessions.
-# Removing --cache-reuse: not supported by the Vulkan backend.
+# 128K context uses ~10GB KV cache on 96GB VRAM — 68GB headroom. OOM kills were
+# CPU RAM exhaustion (31GB), not VRAM. Model lives entirely in the 96GB VRAM pool.
 Exec=llama-server --host 0.0.0.0 --port 8080 \
      --model /mnt/models/gemma-4-31B-it-Q4_K_M.gguf \
      --no-jinja --no-warmup \
      --alias unsloth/gemma-4-31B-it-GGUF \
-     --ctx-size 16384 --temp 0.8 \
+     --ctx-size 131072 --temp 0.8 \
      -ngl 999 --threads 16 --log-colors on \
      --jinja --parallel 1 --cache-ram 0
 SecurityLabelDisable=true
