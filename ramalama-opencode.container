@@ -16,21 +16,20 @@ Environment=HOME=/tmp
 Environment=HIP_VISIBLE_DEVICES=0
 # ramalama emits --no-jinja by default; --jinja (appended via runtime-args) overrides it.
 # Gemma 4 requires full Jinja2 template support or llama-server exits immediately.
-# 32K context + --parallel 1 + --cache-ram 0 keeps RSS under ~12GB to avoid OOM on
-# a 31GB RAM system (all OOM kills observed were RSS ~12-22GB on this host).
+# 16K context (down from 32K) + no mmproj keeps RSS ~20-22GB on 31GB unified memory.
+# Removing --mmproj saves ~2.5GB — not needed for text-only OpenCode sessions.
+# Removing --cache-reuse: not supported by the Vulkan backend.
 Exec=llama-server --host 0.0.0.0 --port 8080 \
      --model /mnt/models/gemma-4-31B-it-Q4_K_M.gguf \
-     --mmproj /mnt/models/mmproj-F16.gguf \
      --no-jinja --no-warmup \
      --alias unsloth/gemma-4-31B-it-GGUF \
-     --ctx-size 32768 --temp 0.8 \
-     --cache-reuse 256 -ngl 999 --threads 16 --log-colors on \
+     --ctx-size 16384 --temp 0.8 \
+     -ngl 999 --threads 16 --log-colors on \
      --jinja --parallel 1 --cache-ram 0
 SecurityLabelDisable=true
 DropCapability=all
 NoNewPrivileges=true
 Mount=type=bind,src=/var/home/james/.local/share/ramalama/store/huggingface/unsloth/gemma-4-31B-it-GGUF/blobs/sha256-2dfbfc7d538912f4ea11d29d85b4e25d7bc26386e53f57529f1d707c28b5828c,target=/mnt/models/chat_template_extracted,ro,Z
-Mount=type=bind,src=/var/home/james/.local/share/ramalama/store/huggingface/unsloth/gemma-4-31B-it-GGUF/blobs/sha256-1be2a32013e0d29c6c746513b5f5e7d38f47b694351e74a69c7172acdbbb11a6,target=/mnt/models/mmproj-F16.gguf,ro,Z
 Mount=type=bind,src=/var/home/james/.local/share/ramalama/store/huggingface/unsloth/gemma-4-31B-it-GGUF/blobs/sha256-30ac8fa6b6fe8e23f73b2202b401ba352949674fe3a2d50c5c55bc88be76c809,target=/mnt/models/gemma-4-31B-it-Q4_K_M.gguf,ro,Z
 ContainerName=ramalama-opencode
 PublishPort=0.0.0.0:8080:8080
