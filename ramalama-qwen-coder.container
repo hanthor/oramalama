@@ -15,14 +15,15 @@ RunInit=true
 Environment=HOME=/tmp
 Environment=HIP_VISIBLE_DEVICES=0
 # Qwen3 MoE: 79.7B params, 10 active experts / 512 total.
-# ~40.8GB VRAM + ~8GB KV cache at 64K ctx = ~49GB.
-# Combined with Gemma 4 (~29GB): ~78GB / 96GB VRAM total.
+# Manual-only secondary provider: keeping this loaded alongside Gemma makes the
+# desktop sluggish even though it fits in raw VRAM. Use it on demand.
+# ~40.8GB VRAM + ~4GB KV cache at 32K ctx = ~45GB.
 # Port 8081 — secondary OpenCode provider (coding tasks).
 Exec=llama-server --host 0.0.0.0 --port 8081 \
      --model /mnt/models/Qwen3-Coder-Next-Q4_K_M.gguf \
      --no-jinja --no-warmup \
      --alias unsloth/Qwen3-Coder-Next-GGUF \
-     --ctx-size 65536 --temp 0.6 \
+     --ctx-size 32768 --temp 0.6 \
      -ngl 999 --threads 16 --log-colors on \
      --jinja --parallel 1 --cache-ram 0
 SecurityLabelDisable=true
@@ -37,6 +38,3 @@ PublishPort=0.0.0.0:8081:8081
 Restart=on-failure
 RestartSec=30
 OOMScoreAdjust=-300
-
-[Install]
-WantedBy=default.target
