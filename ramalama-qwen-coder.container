@@ -1,0 +1,42 @@
+# Managed by oramalama/opencode-rl — do not edit by hand.
+# Regenerate with: ramalama serve --generate quadlet ... (see opencode-rl)
+
+[Unit]
+Description=RamaLama Qwen3-Coder-Next 79.7B AI Model Service (Second Provider)
+# Start after filesystems are mounted so the model blob paths are accessible.
+After=local-fs.target
+
+[Container]
+AddDevice=-/dev/accel
+AddDevice=-/dev/dri
+AddDevice=-/dev/kfd
+Image=docker.io/kyuz0/amd-strix-halo-toolboxes:vulkan-radv
+RunInit=true
+Environment=HOME=/tmp
+Environment=HIP_VISIBLE_DEVICES=0
+# Qwen3 MoE: 79.7B params, 10 active experts / 512 total.
+# ~40.8GB VRAM + ~8GB KV cache at 64K ctx = ~49GB.
+# Combined with Gemma 4 (~29GB): ~78GB / 96GB VRAM total.
+# Port 8081 — secondary OpenCode provider (coding tasks).
+Exec=llama-server --host 0.0.0.0 --port 8081 \
+     --model /mnt/models/Qwen3-Coder-Next-Q4_K_M.gguf \
+     --no-jinja --no-warmup \
+     --alias unsloth/Qwen3-Coder-Next-GGUF \
+     --ctx-size 65536 --temp 0.6 \
+     -ngl 999 --threads 16 --log-colors on \
+     --jinja --parallel 1 --cache-ram 0
+SecurityLabelDisable=true
+DropCapability=all
+NoNewPrivileges=true
+Mount=type=bind,src=/var/home/james/.local/share/ramalama/store/huggingface/unsloth/Qwen3-Coder-Next-GGUF/blobs/sha256-7fe136834ecf141f590ea2cd9f07a030bf92436520f5f031d7f6a97d13d22b05,target=/mnt/models/chat_template_extracted,ro,Z
+Mount=type=bind,src=/var/home/james/.local/share/ramalama/store/huggingface/unsloth/Qwen3-Coder-Next-GGUF/blobs/sha256-9e6032d2f3b50a60f17ce8bf5a1d85c71af9b53b89c7978020ae7c660f29b090,target=/mnt/models/Qwen3-Coder-Next-Q4_K_M.gguf,ro,Z
+ContainerName=ramalama-qwen-coder
+PublishPort=0.0.0.0:8081:8081
+
+[Service]
+Restart=on-failure
+RestartSec=30
+OOMScoreAdjust=-300
+
+[Install]
+WantedBy=default.target
