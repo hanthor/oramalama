@@ -79,8 +79,8 @@ func ConfigurePi(endpointBase, modelID, displayName string) error {
 				"name":    "RamaLama",
 				"apiKey":  "sk-no-key-required",
 				"baseUrl": baseURL,
-				"models": map[string]interface{}{
-					modelID: map[string]interface{}{
+				"models": []map[string]interface{}{
+					{
 						"id":   modelID,
 						"name": displayName,
 					},
