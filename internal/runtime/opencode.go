@@ -77,6 +77,7 @@ func ConfigurePi(endpointBase, modelID, displayName string) error {
 		"providers": map[string]interface{}{
 			"ramalama": map[string]interface{}{
 				"name":    "RamaLama",
+				"api":     "openai",
 				"apiKey":  "sk-no-key-required",
 				"baseUrl": baseURL,
 				"models": []map[string]interface{}{
