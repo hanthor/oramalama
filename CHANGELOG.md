@@ -1,3 +1,10 @@
+## [0.1.4](https://github.com/hanthor/oramalama/compare/v0.1.3...v0.1.4) (2026-04-25)
+
+
+### Bug Fixes
+
+* remove goreleaser from semantic-release workflow ([a09404e](https://github.com/hanthor/oramalama/commit/a09404efe49dafb852f0278938acda4a5bb2da30))
+
 ## [0.1.3](https://github.com/hanthor/oramalama/compare/v0.1.2...v0.1.3) (2026-04-25)
 
 
