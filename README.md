@@ -19,8 +19,8 @@ oramalama [--remote <url>] [--model <name>] [--dry-run] <subcommand>
 - **Remote inference** — point at any ramalama server over Tailscale / LAN with `--remote`; SSH-based remote model switching built in
 - **llmfit integration** — `oramalama search` recommends models that fit your GPU; press `i` in any model picker for a full hardware-fit panel
 - **Open WebUI** — ramalama bundles Open WebUI; `oramalama launch --tool open-webui` starts it instantly
-- **Full tool ecosystem** — `oramalama launch` supports 11 tools across 3 categories:
-  - *Coding:* OpenCode, Goose CLI, VS Code (Continue/Cline)
+- **Full tool ecosystem** — `oramalama launch` supports 12 tools across 3 categories:
+  - *Coding:* OpenCode, Pi, Goose CLI, VS Code (Continue/Cline)
   - *Web UIs:* llama.cpp built-in, Open WebUI, AnythingLLM, NextChat, Lobe Chat, big-AGI
   - *Terminal:* aichat, tgpt
 - **Systemd quadlet** — default model runs as a persistent user service with auto-restart
@@ -29,6 +29,24 @@ oramalama [--remote <url>] [--model <name>] [--dry-run] <subcommand>
 ---
 
 ## Install
+
+### Homebrew (macOS / Linux)
+
+```bash
+brew install hanthor/tap/oramalama
+```
+
+### Direct download
+
+Download the latest binary for your OS/architecture from [GitHub Releases](https://github.com/hanthor/oramalama/releases).
+
+```bash
+# Example: Linux x86_64
+curl -fsSL https://github.com/hanthor/oramalama/releases/latest/download/oramalama_linux_amd64.tar.gz | tar xz
+sudo mv oramalama /usr/local/bin
+```
+
+### Legacy: From source
 
 ```bash
 bash install.sh                     # installs to ~/.local/bin
@@ -47,6 +65,7 @@ bash install.sh --uninstall         # remove
 | `llmfit` | optional | https://github.com/jmorganca/llmfit |
 | `nmap` | optional (faster discovery) | system package manager |
 | `opencode` | optional | https://opencode.ai |
+| `pi` | optional | https://pi.dev |
 | `goose` | optional | https://block.github.io/goose/ |
 
 ---
@@ -123,6 +142,7 @@ What would you like to launch?
 | Tool | `--tool` | Notes |
 |---|---|---|
 | OpenCode | `opencode` | Configured automatically via `opencode.json` |
+| Pi | `pi` | Configured automatically via `~/.pi/agent/models.json` |
 | Goose CLI | `goose` | Launched with `OPENAI_HOST` / `OPENAI_API_KEY` env vars |
 | VS Code | `vscode` | Opens `code .`; install [Continue](https://continue.dev) or [Cline](https://github.com/cline/cline) extension |
 
@@ -331,6 +351,9 @@ oramalama launch --tool webui
 
 # Start opencode pointed at local model
 oramalama launch --tool opencode
+
+# Start pi coding agent
+oramalama launch --tool pi
 
 # Start Open WebUI chat interface (requires podman/docker)
 oramalama launch --tool open-webui
