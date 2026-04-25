@@ -1,0 +1,61 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"os"
+
+	"github.com/hanthor/oramalama/internal/cli"
+	"github.com/hanthor/oramalama/internal/config"
+	"github.com/hanthor/oramalama/internal/server"
+)
+
+func main() {
+	args := os.Args[1:]
+	cfg := config.Load()
+
+	// Fast path: `oramalama-go serve` starts the HTTP API server (not ramalama).
+	if len(args) > 0 && args[0] == "serve" {
+		srv := server.New(cfg)
+		if err := srv.Start("0.0.0.0:" + config.ServerPort); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	global := flag.NewFlagSet("oramalama-go", flag.ContinueOnError)
+	global.SetOutput(os.Stderr)
+
+	var model string
+	var dryRun bool
+	global.StringVar(&model, "model", "", "model to serve or launch")
+	global.BoolVar(&dryRun, "dry-run", false, "print actions without executing them")
+
+	if err := global.Parse(args); err != nil {
+		os.Exit(1)
+	}
+
+	runner := cli.NewRunner(os.Stdout, os.Stderr)
+	runner.CLIModel = model
+	runner.DryRun = dryRun
+
+	dispatcher := cli.NewDispatcher(runner)
+	rest := global.Args()
+
+	var cmd string
+	var cmdArgs []string
+	if len(rest) == 0 {
+		// No subcommand: default to `launch` (opens TUI menu), matching bash behaviour.
+		cmd = "launch"
+	} else {
+		cmd = rest[0]
+		cmdArgs = rest[1:]
+	}
+
+	if err := dispatcher.Dispatch(context.Background(), cmd, cmdArgs); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}

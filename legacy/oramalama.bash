@@ -61,6 +61,48 @@ check_deps() {
 }
 
 # ---------------------------------------------------------------------------
+# ensure_npm_tool: auto-install npm tools if missing
+# ---------------------------------------------------------------------------
+ensure_npm_tool() {
+    local tool_name="$1"      # e.g. "pi"
+    local npm_package="$2"    # e.g. "@mariozechner/pi-coding-agent"
+
+    if command -v "$tool_name" &>/dev/null; then
+        return 0  # Already installed
+    fi
+
+    # Check if npm is available
+    if ! command -v npm &>/dev/null; then
+        gum style --foreground 208 "⚠️  npm is required to install $tool_name, but not found"
+        return 1
+    fi
+
+    gum style --foreground 39 "📦 Installing $npm_package..."
+    if npm install -g "$npm_package" 2>&1 | tail -5; then
+        gum style --foreground 120 "✅ Installed $tool_name"
+        return 0
+    else
+        gum style --foreground 208 "❌ Failed to install $tool_name"
+        return 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# suggest_install: suggest installation command for a tool
+# ---------------------------------------------------------------------------
+suggest_install() {
+    local tool_name="$1"
+    local install_cmd="$2"
+    local alt_installs="${3:-}"
+
+    gum style --foreground 208 "⚠️  $tool_name is not installed. Install it with:"
+    gum style --foreground 117 "   $install_cmd"
+    if [ -n "$alt_installs" ]; then
+        gum style --foreground 245 "   Alternative: $alt_installs"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # detect_hardware: set USE_IMAGE and EXTRA_SERVE_FLAGS based on local GPU.
 #
 # Strix Halo (AMD Ryzen AI Max / RDNA 4) is an APU where the BIOS carves out
@@ -345,6 +387,73 @@ configure_opencode() {
         "$OPENCODE_CONFIG" > "$TEMP" && mv "$TEMP" "$OPENCODE_CONFIG"
 
     gum style --foreground 121 "📝 OpenCode configured → provider: ramalama / model: ${model_id}"
+}
+
+# ---------------------------------------------------------------------------
+# configure_pi: write the ramalama provider + model into pi's models.json
+# Pi supports OpenAI-compatible providers via ~/.pi/agent/models.json
+# ---------------------------------------------------------------------------
+configure_pi() {
+    local base_endpoint="$1"
+    local model_id="$2"        # e.g. hf://unsloth/Qwen3-Coder-Next-GGUF:Q4_K_M
+    local model_display="$3"   # human-friendly name
+
+    local pi_config="${HOME}/.pi/agent/models.json"
+    mkdir -p "${pi_config%/*}"
+
+    local base_url="${base_endpoint}/v1"
+    # Legacy SSH remote: override with explicit host:port
+    [ -n "$REMOTE_HOST" ] && base_url="http://${REMOTE_HOST}:${LOCAL_PORT}/v1"
+
+    TEMP=$(mktemp --suffix=.json)
+
+    # Create or update pi's models.json with ramalama as default provider
+    if [ -f "$pi_config" ]; then
+        jq \
+            --arg key    "$model_id" \
+            --arg name   "$model_display" \
+            --arg base   "$base_url" \
+            --arg model  "$model_id" \
+            '
+            .defaultProvider = "ramalama" |
+            .defaultModel = $model |
+            .providers.ramalama = {
+              "name": "RamaLama",
+              "apiKey": "sk-no-key-required",
+              "baseUrl": $base,
+              "models": {
+                ($key): {
+                  "id": $key,
+                  "name": $name
+                }
+              }
+            }
+            ' \
+            "$pi_config" > "$TEMP" && mv "$TEMP" "$pi_config"
+    else
+        cat > "$TEMP" <<EOF
+{
+  "defaultProvider": "ramalama",
+  "defaultModel": "$model_id",
+  "providers": {
+    "ramalama": {
+      "name": "RamaLama",
+      "apiKey": "sk-no-key-required",
+      "baseUrl": "$base_url",
+      "models": {
+        "$model_id": {
+          "id": "$model_id",
+          "name": "$model_display"
+        }
+      }
+    }
+  }
+}
+EOF
+        mv "$TEMP" "$pi_config"
+    fi
+
+    gum style --foreground 121 "📝 Pi configured → provider: ramalama / model: ${model_id}"
 }
 
 # ---------------------------------------------------------------------------
@@ -1702,9 +1811,9 @@ cmd_launch() {
         # Direct --tool dispatch (no interactive menu)
         case "${launch_tool,,}" in
             opencode)                  SELECTED_TOOL="OpenCode" ;;
+            pi|pi-coding-agent)        SELECTED_TOOL="Pi" ;;
             goose)                     SELECTED_TOOL="Goose CLI" ;;
             vscode|code)               SELECTED_TOOL="VS Code" ;;
-            aichat)                    SELECTED_TOOL="aichat" ;;
             tgpt)                      SELECTED_TOOL="tgpt" ;;
             webui|web-ui|web_ui)       SELECTED_TOOL="Web UI" ;;
             open-webui|openwebui)      SELECTED_TOOL="Open WebUI" ;;
@@ -1731,10 +1840,27 @@ cmd_launch() {
         case "$CATEGORY" in
             "Coding Tools")
                 local T=()
-                command -v opencode &>/dev/null && T+=("OpenCode")
-                T+=("Goose CLI")
+                if command -v opencode &>/dev/null || ensure_npm_tool "opencode" "opencode-ai"; then
+                    T+=("OpenCode")
+                fi
+                if command -v pi &>/dev/null || ensure_npm_tool "pi" "@mariozechner/pi-coding-agent"; then
+                    T+=("Pi")
+                fi
+                if command -v goose &>/dev/null; then
+                    T+=("Goose CLI")
+                fi
                 command -v code &>/dev/null && T+=("VS Code  (Continue / Cline plugin)")
-                [ ${#T[@]} -eq 0 ] && echo "No coding tools found. Install opencode, goose, or code." && exit 1
+
+                if [ ${#T[@]} -eq 0 ]; then
+                    echo "❌ No coding tools found."
+                    echo ""
+                    suggest_install "OpenCode" "npm install -g opencode-ai"
+                    echo ""
+                    suggest_install "Goose CLI" "brew install block-goose-cli"
+                    echo ""
+                    suggest_install "VS Code" "Install from https://code.visualstudio.com and add Continue or Cline extension"
+                    exit 1
+                fi
                 SELECTED_TOOL=$(printf "%s\n" "${T[@]}" | gum choose --header "Select a coding tool")
                 ;;
             "Web UIs")
@@ -1756,9 +1882,14 @@ cmd_launch() {
                 ;;
             "Terminal Chat")
                 local T=()
-                command -v aichat &>/dev/null && T+=("aichat")
-                command -v tgpt   &>/dev/null && T+=("tgpt")
-                [ ${#T[@]} -eq 0 ] && echo "No terminal chat tools found. Install aichat or tgpt." && exit 1
+                command -v tgpt &>/dev/null && T+=("tgpt")
+
+                if [ ${#T[@]} -eq 0 ]; then
+                    echo "❌ No terminal chat tools found."
+                    echo ""
+                    suggest_install "tgpt" "curl -sSL https://raw.githubusercontent.com/aandrew-me/tgpt/main/install | bash -s /usr/local/bin" "brew install tgpt"
+                    exit 1
+                fi
                 SELECTED_TOOL=$(printf "%s\n" "${T[@]}" | gum choose --header "Select a terminal chat tool")
                 ;;
             "Only Start Server")
@@ -1770,6 +1901,39 @@ cmd_launch() {
     fi
 
     [ "$SELECTED_TOOL" = "Suggest Models (llmfit)" ] && { cmd_search; return; }
+
+    # ── Ensure tools are installed ───────────────────────────────────────────
+    case "$SELECTED_TOOL" in
+        "OpenCode")
+            ensure_npm_tool "opencode" "opencode-ai" || exit 1
+            ;;
+        "Pi")
+            ensure_npm_tool "pi" "@mariozechner/pi-coding-agent" || exit 1
+            ;;
+        "Goose CLI")
+            if ! command -v goose &>/dev/null; then
+                echo "❌ Goose CLI not found."
+                suggest_install "Goose CLI" "brew install block-goose-cli"
+                exit 1
+            fi
+            ;;
+        "tgpt")
+            if ! command -v tgpt &>/dev/null; then
+                echo "❌ tgpt not found."
+                suggest_install "tgpt" "curl -sSL https://raw.githubusercontent.com/aandrew-me/tgpt/main/install | bash -s /usr/local/bin" "brew install tgpt"
+                exit 1
+            fi
+            ;;
+        "VS Code"*)
+            if ! command -v code &>/dev/null; then
+                echo "❌ VS Code not found."
+                gum style --foreground 208 "⚠️  VS Code is not installed."
+                gum style --foreground 117 "   Install from https://code.visualstudio.com"
+                gum style --foreground 245 "   Then install Continue or Cline extension"
+                exit 1
+            fi
+            ;;
+    esac
 
     # ── Start server ─────────────────────────────────────────────────────────
     ensure_server_running
@@ -1794,6 +1958,13 @@ cmd_launch() {
             gum style --foreground 212 "🦢 Launching Goose CLI..."
             dry_run_cmd "GOOSE_PROVIDER=openai GOOSE_MODEL='${SERVED_MODEL_ID}' OPENAI_HOST='${ENDPOINT}' OPENAI_API_KEY='sk-no-key-required' goose session"
             ;;
+        "Pi")
+            local DISPLAY_NAME
+            DISPLAY_NAME=$(echo "$SERVED_MODEL_ID" | sed 's|hf://||; s|:| |g; s|/| / |g')
+            configure_pi "$ENDPOINT" "$SERVED_MODEL_ID" "$DISPLAY_NAME (RamaLama)"
+            gum style --foreground 212 "🤖 Launching Pi..."
+            dry_run_cmd "pi $*"
+            ;;
         "VS Code"*)
             gum style --foreground 212 "💡 Opening VS Code..."
             gum style --foreground 245 "   Install the Continue or Cline extension and point it at ${ENDPOINT}/v1"
@@ -1802,10 +1973,6 @@ cmd_launch() {
             ;;
 
         # ── Terminal chat ─────────────────────────────────────────────────────
-        "aichat")
-            gum style --foreground 212 "💬 Launching aichat..."
-            dry_run_cmd "OPENAI_API_BASE='${ENDPOINT}/v1' OPENAI_API_KEY='sk-no-key-required' aichat"
-            ;;
         "tgpt")
             gum style --foreground 212 "💬 Launching tgpt..."
             dry_run_cmd "tgpt --provider openai --url '${ENDPOINT}/v1/chat/completions' --key 'sk-no-key-required' --model '${SERVED_MODEL_ID}'"
