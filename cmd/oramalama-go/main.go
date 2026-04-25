@@ -11,6 +11,12 @@ import (
 	"github.com/hanthor/oramalama/internal/server"
 )
 
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
+
 func main() {
 	args := os.Args[1:]
 	cfg := config.Load()
@@ -25,16 +31,23 @@ func main() {
 		return
 	}
 
-	global := flag.NewFlagSet("oramalama-go", flag.ContinueOnError)
+	global := flag.NewFlagSet("oramalama", flag.ContinueOnError)
 	global.SetOutput(os.Stderr)
 
 	var model string
 	var dryRun bool
+	var showVersion bool
 	global.StringVar(&model, "model", "", "model to serve or launch")
 	global.BoolVar(&dryRun, "dry-run", false, "print actions without executing them")
+	global.BoolVar(&showVersion, "version", false, "print version and exit")
 
 	if err := global.Parse(args); err != nil {
 		os.Exit(1)
+	}
+
+	if showVersion {
+		fmt.Printf("oramalama version %s (commit: %s, date: %s)\n", version, commit, date)
+		os.Exit(0)
 	}
 
 	runner := cli.NewRunner(os.Stdout, os.Stderr)
