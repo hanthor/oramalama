@@ -1,0 +1,89 @@
+version: 2
+
+project_name: oramalama
+dist: dist
+
+builds:
+  - id: oramalama
+    main: ./cmd/oramalama-go
+    binary: oramalama
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: default
+    format: tar.gz
+    format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+
+brews:
+  - repository:
+      owner: hanthor
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.GITHUB_TOKEN }}"
+    folder: Formula
+    homepage: https://github.com/hanthor/oramalama
+    description: "oramalama — local AI coding assistant powered by RamaLama"
+    license: "Apache-2.0"
+    skip_upload: false
+    test: |
+      system "#{bin}/oramalama --help"
+    dependencies:
+      - name: ramalama
+      - name: gum
+      - name: jq
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  name_template: "{{ .Version }}-snapshot-{{ .ShortCommit }}"
+
+release:
+  github:
+    owner: hanthor
+    name: oramalama
+  footer: |
+    ## Installation
+
+    **macOS/Linux (Homebrew):**
+    ```bash
+    brew install hanthor/tap/oramalama
+    ```
+
+    **Linux (script):**
+    ```bash
+    curl -fsSL https://github.com/hanthor/oramalama/releases/latest/download/oramalama_linux_amd64.tar.gz | tar xz
+    sudo mv oramalama /usr/local/bin
+    ```
+
+    **All platforms:**
+    Download the appropriate binary for your OS/architecture from the Assets section above.
+
+    ## Dependencies
+    - ramalama
+    - gum
+    - jq
+
+announce:
+  skip: false
