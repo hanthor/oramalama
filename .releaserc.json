@@ -22,13 +22,6 @@
         "successComment": false,
         "failComment": false
       }
-    ],
-    [
-      "@semantic-release/exec",
-      {
-        "prepareCmd": "go mod tidy",
-        "publishCmd": "goreleaser release --clean"
-      }
     ]
   ]
 }
