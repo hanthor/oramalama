@@ -1,3 +1,10 @@
+## [0.1.5](https://github.com/hanthor/oramalama/compare/v0.1.4...v0.1.5) (2026-04-25)
+
+
+### Bug Fixes
+
+* correct pi API configuration to use openai-completions ([24dc5c9](https://github.com/hanthor/oramalama/commit/24dc5c9a5b2f440e72969e8b2d59c3fc11d024c1))
+
 ## [0.1.4](https://github.com/hanthor/oramalama/compare/v0.1.3...v0.1.4) (2026-04-25)
 
 
