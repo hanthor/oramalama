@@ -145,6 +145,18 @@ func EnsureServer(ctx context.Context, model string, dryRun bool, stdout, stderr
 		return "", "", errors.New("the Go rewrite currently requires --model for serve/launch")
 	}
 
+	// 1. Check if the service is in a failed state and attempt to recover it
+	if UnitExists(ctx, quadletUnit) {
+		status, _ := capture(ctx, "systemctl", "--user", "is-active", quadletUnit)
+		if strings.TrimSpace(status) == "failed" {
+			fmt.Fprintf(stdout, "service %s is in failed state, attempting to re-sync...\n", quadletUnit)
+			// Re-run the ramalama config to fix the model paths in the generated quadlet
+			if err := runOrPrint(ctx, dryRun, "ramalama", []string{"serve", "--detach", "--name", containerName}, stdout, stderr); err != nil {
+				fmt.Fprintf(stderr, "warning: failed to re-sync service: %v\n", err)
+			}
+		}
+	}
+
 	models, err := InstalledModels(ctx)
 	if err != nil {
 		return "", "", err
