@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/hanthor/oramalama/internal/config"
 )
 
 // ── NormalizeModel tests ──────────────────────────────────────────────────────
@@ -716,5 +718,305 @@ func TestResolveRunTarget_NoPrompt(t *testing.T) {
 	_, _, err := ResolveRunTarget(context.Background(), "model", nil)
 	if err == nil {
 		t.Error("expected error")
+	}
+}
+
+func TestResolveRunTarget_NoArgs(t *testing.T) {
+	_, _, err := ResolveRunTarget(context.Background(), "", nil)
+	if err == nil {
+		t.Error("expected error with no args and no model")
+	}
+}
+
+func TestResolveRunTarget_TwoArgs(t *testing.T) {
+	model, prompt, err := ResolveRunTarget(context.Background(), "", []string{"model", "prompt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model != "model" || prompt != "prompt" {
+		t.Errorf("got %q %q", model, prompt)
+	}
+}
+
+func TestResolveRunTarget_OneArgServerRunning(t *testing.T) {
+	oldCap := execCapture
+	oldHTTP := httpDo
+	defer func() { execCapture = oldCap; httpDo = oldHTTP }()
+
+	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		return "", errors.New("no podman")
+	}
+	httpDo = func(req *http.Request) (*http.Response, error) {
+		body := io.NopCloser(strings.NewReader(`{"data":[{"id":"running-model"}]}`))
+		return &http.Response{StatusCode: 200, Body: body}, nil
+	}
+
+	model, prompt, err := ResolveRunTarget(context.Background(), "", []string{"hello prompt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model != "running-model" || prompt != "hello prompt" {
+		t.Errorf("got %q %q", model, prompt)
+	}
+}
+
+func TestEnsureServer_VRAMTooLarge(t *testing.T) {
+	oldCap := execCapture
+	oldGPU := config.DRMDeviceGlob
+	defer func() { execCapture = oldCap; config.DRMDeviceGlob = oldGPU }()
+
+	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		if strings.HasPrefix(name, "ramalama") && args[0] == "list" {
+			return `[{"name":"big-model","size":50000000000}]`, nil
+		}
+		return "", errors.New("unknown")
+	}
+
+	// Set up fake GPU with small VRAM so the model is too big.
+	dir := t.TempDir()
+	cardDir := filepath.Join(dir, "card0", "device")
+	os.MkdirAll(cardDir, 0755)
+	os.WriteFile(filepath.Join(cardDir, "vendor"), []byte("0x1002\n"), 0644)
+	os.WriteFile(filepath.Join(cardDir, "mem_info_vram_total"), []byte("8589934592\n"), 0644)
+	os.WriteFile(filepath.Join(cardDir, "mem_info_vram_used"), []byte("0\n"), 0644)
+	config.DRMDeviceGlob = filepath.Join(dir, "card*", "device")
+
+	var out bytes.Buffer
+	_, _, err := EnsureServer(context.Background(), "big-model", false, &out, &out)
+	if err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Errorf("expected 'too large' error, got: %v", err)
+	}
+}
+
+func TestEnsureServer_AlreadyRunning(t *testing.T) {
+	oldCap := execCapture
+	oldHTTP := httpDo
+	defer func() { execCapture = oldCap; httpDo = oldHTTP }()
+
+	callCount := 0
+	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		callCount++
+		switch {
+		case strings.HasPrefix(name, "ramalama") && args[0] == "list":
+			return `[{"name":"test-model","size":1000000000}]`, nil
+		case name == "podman" && args[0] == "inspect":
+			return "running", nil
+		case name == "podman" && args[0] == "port":
+			return "0.0.0.0:8080\n", nil
+		default:
+			return "", errors.New("not handled")
+		}
+	}
+
+	httpDo = func(req *http.Request) (*http.Response, error) {
+		body := io.NopCloser(strings.NewReader(`{"data":[{"id":"test-model"}]}`))
+		return &http.Response{StatusCode: 200, Body: body}, nil
+	}
+
+	var out bytes.Buffer
+	endpoint, model, err := EnsureServer(context.Background(), "test-model", false, &out, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model != "test-model" {
+		t.Errorf("model: got %q", model)
+	}
+	if endpoint != "http://127.0.0.1:8080" {
+		t.Errorf("endpoint: got %q", endpoint)
+	}
+	if !strings.Contains(out.String(), "already running") {
+		t.Errorf("expected 'already running' in output: %s", out.String())
+	}
+}
+
+func TestEnsureServer_StandardServe(t *testing.T) {
+	oldCap := execCapture
+	oldHTTP := httpDo
+	oldRun := execRun
+	defer func() { execCapture = oldCap; httpDo = oldHTTP; execRun = oldRun }()
+
+	callCount := 0
+	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		callCount++
+		switch {
+		case strings.HasPrefix(name, "ramalama") && args[0] == "list":
+			return `[{"name":"test-model","size":1000000000}]`, nil
+		case name == "podman" && args[0] == "inspect":
+			return "", errors.New("no such container")
+		default:
+			return "", errors.New("not handled")
+		}
+	}
+
+	// Use call count: first call says "not running yet", second call says "done".
+	httpCall := 0
+	httpDo = func(req *http.Request) (*http.Response, error) {
+		httpCall++
+		id := "other-model"
+		if httpCall >= 2 {
+			id = "test-model"
+		}
+		body := io.NopCloser(strings.NewReader(`{"data":[{"id":"` + id + `"}]}`))
+		return &http.Response{StatusCode: 200, Body: body}, nil
+	}
+
+	execRun = func(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
+		return nil // success
+	}
+
+	var out bytes.Buffer
+	_, model, err := EnsureServer(context.Background(), "test-model", false, &out, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model != "test-model" {
+		t.Errorf("model: got %q, want 'test-model'", model)
+	}
+	if !strings.Contains(out.String(), "server ready") {
+		t.Errorf("expected 'server ready' in output: %s", out.String())
+	}
+}
+
+func TestEnsureServer_DryRun(t *testing.T) {
+	oldCap := execCapture
+	oldHTTP := httpDo
+	oldRun := execRun
+	defer func() { execCapture = oldCap; httpDo = oldHTTP; execRun = oldRun }()
+
+	callCount := 0
+	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		callCount++
+		switch {
+		case strings.HasPrefix(name, "ramalama") && args[0] == "list":
+			return `[{"name":"test-model","size":1000000000}]`, nil
+		case name == "podman" && args[0] == "inspect":
+			return "", errors.New("no container")
+		default:
+			return "", errors.New("not handled")
+		}
+	}
+
+	httpDo = func(req *http.Request) (*http.Response, error) {
+		body := io.NopCloser(strings.NewReader(`{"data":[{"id":"other-model"}]}`))
+		return &http.Response{StatusCode: 200, Body: body}, nil
+	}
+
+	execRun = func(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
+		return nil
+	}
+
+	var out bytes.Buffer
+	_, model, err := EnsureServer(context.Background(), "test-model", true, &out, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model != "test-model" {
+		t.Errorf("model: got %q", model)
+	}
+	if strings.Contains(out.String(), "server ready") {
+		t.Error("dry-run should not print 'server ready'")
+	}
+}
+
+func TestEnsureServer_StrixHaloArgs(t *testing.T) {
+	oldCap := execCapture
+	oldHTTP := httpDo
+	oldRun := execRun
+	oldGPU := config.DRMDeviceGlob
+	defer func() { execCapture = oldCap; httpDo = oldHTTP; execRun = oldRun; config.DRMDeviceGlob = oldGPU }()
+
+	// Set up Strix Halo GPU (AMD + >60GB).
+	dir := t.TempDir()
+	cardDir := filepath.Join(dir, "card0", "device")
+	os.MkdirAll(cardDir, 0755)
+	os.WriteFile(filepath.Join(cardDir, "vendor"), []byte("0x1002\n"), 0644)
+	os.WriteFile(filepath.Join(cardDir, "mem_info_vram_total"), []byte("103079215104\n"), 0644)
+	os.WriteFile(filepath.Join(cardDir, "mem_info_vram_used"), []byte("0\n"), 0644)
+	config.DRMDeviceGlob = filepath.Join(dir, "card*", "device")
+
+	callCount := 0
+	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		callCount++
+		switch {
+		case strings.HasPrefix(name, "ramalama") && args[0] == "list":
+			return `[{"name":"test-model","size":1000000000}]`, nil
+		case name == "podman" && args[0] == "inspect":
+			return "", errors.New("no container")
+		default:
+			return "", errors.New("not handled")
+		}
+	}
+
+	// Two calls to ModelIDFromEndpoint: pre (not running) and post (now running).
+	httpCall := 0
+	httpDo = func(req *http.Request) (*http.Response, error) {
+		httpCall++
+		id := "other-model"
+		if httpCall >= 2 {
+			id = "test-model"
+		}
+		body := io.NopCloser(strings.NewReader(`{"data":[{"id":"` + id + `"}]}`))
+		return &http.Response{StatusCode: 200, Body: body}, nil
+	}
+
+	var capturedArgs []string
+	execRun = func(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
+		capturedArgs = args
+		return nil
+	}
+
+	var out bytes.Buffer
+	_, _, err := EnsureServer(context.Background(), "test-model", false, &out, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(capturedArgs, " "), "--parallel 1") {
+		t.Errorf("expected Strix Halo args, got: %v", capturedArgs)
+	}
+}
+
+func TestResolveShowModel_Error(t *testing.T) {
+	oldCap := execCapture
+	oldHTTP := httpDo
+	defer func() { execCapture = oldCap; httpDo = oldHTTP }()
+
+	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		return "", errors.New("no podman")
+	}
+	httpDo = func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 500, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	_, err := ResolveShowModel(context.Background(), "", nil)
+	if err == nil {
+		t.Error("expected error when endpoint fails")
+	}
+}
+
+func TestResolveShowModel_CLI(t *testing.T) {
+	model, err := ResolveShowModel(context.Background(), "cli-model", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model != "cli-model" {
+		t.Errorf("got %q", model)
+	}
+}
+
+func TestResolveRunTarget_OneArgAmbiguous(t *testing.T) {
+	oldCap := execCapture
+	oldHTTP := httpDo
+	defer func() { execCapture = oldCap; httpDo = oldHTTP }()
+
+	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		return "", errors.New("no podman")
+	}
+	httpDo = func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 500, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	_, _, err := ResolveRunTarget(context.Background(), "", []string{"not-a-model"})
+	if err == nil {
+		t.Error("expected error for ambiguous single arg")
 	}
 }

@@ -3,6 +3,8 @@ package model
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -287,5 +289,116 @@ func TestModelIDFromEndpoint_Error(t *testing.T) {
 	_, err := mgr.ModelIDFromEndpoint(context.Background(), "http://bad:8080")
 	if err == nil {
 		t.Error("expected error")
+	}
+}
+
+func TestList_RemoteError(t *testing.T) {
+	oldRun := runOutput
+	defer func() { runOutput = oldRun }()
+
+	runOutput = func(ctx context.Context, name string, args ...string) (string, error) {
+		return "", errors.New("connection refused")
+	}
+
+	mgr := NewManager(&config.Config{RemoteEndpoint: "http://bad:8080"})
+	_, err := mgr.List(context.Background())
+	if err == nil {
+		t.Error("expected error from failed curl")
+	}
+}
+
+func TestList_BadJSON(t *testing.T) {
+	oldRun := runOutput
+	defer func() { runOutput = oldRun }()
+
+	runOutput = func(ctx context.Context, name string, args ...string) (string, error) {
+		return "not-json", nil
+	}
+
+	mgr := NewManager(&config.Config{})
+	_, err := mgr.List(context.Background())
+	if err == nil {
+		t.Error("expected JSON parse error")
+	}
+}
+
+func TestShow_BadJSON(t *testing.T) {
+	oldRun := runOutput
+	defer func() { runOutput = oldRun }()
+
+	runOutput = func(ctx context.Context, name string, args ...string) (string, error) {
+		return "garbage", nil
+	}
+
+	mgr := NewManager(&config.Config{})
+	_, err := mgr.Show(context.Background(), "model")
+	if err == nil {
+		t.Error("expected JSON parse error")
+	}
+}
+
+func TestPull_Error(t *testing.T) {
+	oldQuiet := runQuiet
+	defer func() { runQuiet = oldQuiet }()
+
+	runQuiet = func(ctx context.Context, name string, args ...string) error {
+		return errors.New("pull failed")
+	}
+
+	mgr := NewManager(&config.Config{})
+	err := mgr.Pull(context.Background(), "model")
+	if err == nil {
+		t.Error("expected pull error")
+	}
+}
+
+func TestDelete_Error(t *testing.T) {
+	oldQuiet := runQuiet
+	defer func() { runQuiet = oldQuiet }()
+
+	runQuiet = func(ctx context.Context, name string, args ...string) error {
+		return errors.New("rm failed")
+	}
+
+	mgr := NewManager(&config.Config{})
+	err := mgr.Delete(context.Background(), "model")
+	if err == nil {
+		t.Error("expected delete error")
+	}
+}
+
+func TestModelIDFromEndpoint_BadJSON(t *testing.T) {
+	oldRun := runOutput
+	defer func() { runOutput = oldRun }()
+
+	runOutput = func(ctx context.Context, name string, args ...string) (string, error) {
+		return "not-json", nil
+	}
+
+	mgr := NewManager(&config.Config{})
+	_, err := mgr.ModelIDFromEndpoint(context.Background(), "http://localhost:8080")
+	if err == nil {
+		t.Error("expected parse error")
+	}
+}
+
+func TestSizeCheck_WithGPU(t *testing.T) {
+	oldGlob := config.DRMDeviceGlob
+	defer func() { config.DRMDeviceGlob = oldGlob }()
+
+	// Set up fake GPU with 8GB VRAM — 10GB model should fail.
+	dir := t.TempDir()
+	cardDir := filepath.Join(dir, "card0", "device")
+	os.MkdirAll(cardDir, 0755)
+	os.WriteFile(filepath.Join(cardDir, "vendor"), []byte("0x1002\n"), 0644)
+	os.WriteFile(filepath.Join(cardDir, "mem_info_vram_total"), []byte("8589934592\n"), 0644)
+	os.WriteFile(filepath.Join(cardDir, "mem_info_vram_used"), []byte("0\n"), 0644)
+	config.DRMDeviceGlob = filepath.Join(dir, "card*", "device")
+
+	mgr := NewManager(&config.Config{})
+	// 10GB model on 8GB GPU
+	err := mgr.SizeCheck(10 * 1024 * 1024 * 1024)
+	if err == nil {
+		t.Error("expected 'too large' error for 10GB model on 8GB GPU")
 	}
 }
