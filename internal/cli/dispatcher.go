@@ -123,7 +123,7 @@ func (d *Dispatcher) registerDefaults() {
 	d.commands["run"] = &runCmd{r: d.runner}
 	d.commands["close"] = &closeCmd{r: d.runner}
 	d.commands["serve"] = &serveCmd{r: d.runner}
-	d.commands["launch"] = &launchCmd{r: d.runner}
+	d.commands["launch"] = newLaunchCmd(d.runner)
 	d.commands["search"] = &searchCmd{r: d.runner}
 	d.commands["suggest"] = d.commands["search"]
 	d.commands["llmfit"] = d.commands["search"]

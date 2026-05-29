@@ -13,7 +13,25 @@ import (
 	"github.com/hanthor/oramalama/internal/tui"
 )
 
-type launchCmd struct{ r *Runner }
+// launchPicker abstracts TUI interactions for the launch command.
+// Implemented by tuiPicker (real TUI) and mockable in tests.
+type launchPicker interface {
+	pickTool(ctx context.Context, c *launchCmd) (string, error)
+	pickModel(ctx context.Context, c *launchCmd) (string, error)
+}
+
+// tuiPicker is the default picker using bubbletea TUI.
+type tuiPicker struct{}
+
+func (tuiPicker) pickTool(ctx context.Context, c *launchCmd) (string, error) { return c.tuiPickTool(ctx) }
+func (tuiPicker) pickModel(ctx context.Context, c *launchCmd) (string, error) { return c.tuiPickModel(ctx) }
+
+type launchCmd struct {
+	r      *Runner
+	picker launchPicker
+}
+
+func newLaunchCmd(r *Runner) *launchCmd { return &launchCmd{r: r, picker: tuiPicker{}} }
 
 func (c *launchCmd) Name() string      { return "launch" }
 func (c *launchCmd) Aliases() []string { return nil }
@@ -46,7 +64,7 @@ func (c *launchCmd) Run(ctx context.Context, args []string) error {
 	selectedTool := toolName
 	if selectedTool == "" {
 		var err error
-		selectedTool, err = c.pickTool(ctx)
+		selectedTool, err = c.picker.pickTool(ctx, c)
 		if err != nil {
 			if errors.Is(err, tui.ErrCancelled) {
 				return nil
@@ -65,7 +83,7 @@ func (c *launchCmd) Run(ctx context.Context, args []string) error {
 		model = config.DefaultModel
 	}
 	if model == "" {
-		m, err := c.pickModel(ctx)
+		m, err := c.picker.pickModel(ctx, c)
 		if err != nil {
 			if errors.Is(err, tui.ErrCancelled) {
 				return nil
@@ -108,7 +126,7 @@ func (c *launchCmd) Run(ctx context.Context, args []string) error {
 // ──────────────────────────────────────────────────────────────────────────────
 
 // pickTool shows the two-level category → tool menu.
-func (c *launchCmd) pickTool(ctx context.Context) (string, error) {
+func (c *launchCmd) tuiPickTool(ctx context.Context) (string, error) {
 	cats := []tui.SelectItem{
 		{Name: "Coding Tools", Description: "OpenCode, Goose, VS Code"},
 		{Name: "Start Server Only", Description: "start inference, no editor"},
@@ -122,7 +140,7 @@ func (c *launchCmd) pickTool(ctx context.Context) (string, error) {
 
 	switch category {
 	case "Coding Tools":
-		return c.pickCodingTool(ctx)
+		return c.tuiPickCodingTool(ctx)
 	case "Start Server Only":
 		return "server", nil
 	case "Search Models":
@@ -133,7 +151,7 @@ func (c *launchCmd) pickTool(ctx context.Context) (string, error) {
 }
 
 // pickCodingTool shows the tool sub-menu under "Coding Tools".
-func (c *launchCmd) pickCodingTool(ctx context.Context) (string, error) {
+func (c *launchCmd) tuiPickCodingTool(ctx context.Context) (string, error) {
 	_, hasOpenCode := exec.LookPath("opencode")
 	_, hasPi := exec.LookPath("pi")
 	_, hasGoose := exec.LookPath("goose")
@@ -168,7 +186,7 @@ func (c *launchCmd) pickCodingTool(ctx context.Context) (string, error) {
 
 // pickModel shows the interactive model picker, optionally annotating with
 // llmfit recommendations.
-func (c *launchCmd) pickModel(ctx context.Context) (string, error) {
+func (c *launchCmd) tuiPickModel(ctx context.Context) (string, error) {
 	models, err := runtime.InstalledModels(ctx)
 	if err != nil {
 		return "", err
