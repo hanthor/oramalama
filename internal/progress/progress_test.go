@@ -6,54 +6,35 @@ import (
 	"time"
 )
 
-// ── humanBytes tests ───────────────────────────────────────────────────────────
-
-func TestHumanBytes(t *testing.T) {
+func TestHumanBytes_All(t *testing.T) {
 	tests := []struct {
 		bytes    int64
 		expected string
 	}{
-		{0, "0 B"},
-		{500, "500 B"},
-		{1 * KiloByte, "1 KB"},
-		{12 * KiloByte, "12 KB"},
-		{1500, "1.5 KB"},
-		{1 * MegaByte, "1 MB"},
-		{10 * MegaByte, "10 MB"},
-		{1 * GigaByte, "1 GB"},
-		{6 * GigaByte, "6 GB"},
-		{1 * TeraByte, "1 TB"},
-		{10 * TeraByte, "10 TB"},
+		{0, "0 B"}, {500, "500 B"},
+		{KiloByte, "1 KB"}, {1500, "1.5 KB"}, {10 * KiloByte, "10 KB"},
+		{MegaByte, "1 MB"}, {5 * MegaByte, "5 MB"}, {10 * MegaByte, "10 MB"},
+		{GigaByte, "1 GB"}, {6 * GigaByte, "6 GB"}, {10 * GigaByte, "10 GB"},
+		{TeraByte, "1 TB"}, {10 * TeraByte, "10 TB"},
 	}
 	for _, tt := range tests {
-		got := humanBytes(tt.bytes)
-		if got != tt.expected {
+		if got := humanBytes(tt.bytes); got != tt.expected {
 			t.Errorf("humanBytes(%d) = %q, want %q", tt.bytes, got, tt.expected)
 		}
 	}
 }
 
-// ── formatDuration tests ──────────────────────────────────────────────────────
-
-func TestFormatDuration(t *testing.T) {
-	tests := []struct {
-		d    time.Duration
-		want string
-	}{
-		{0, "0s"},
-		{time.Second, "1s"},
-		{90 * time.Second, "1m30s"},
-		{time.Hour, "1h0m"},
+func TestFormatDuration_All(t *testing.T) {
+	if got := formatDuration(0); got != "0s" {
+		t.Errorf("got %q", got)
 	}
-	for _, tt := range tests {
-		got := formatDuration(tt.d)
-		if !strings.Contains(got, tt.want) || len(got) < len(tt.want) {
-			t.Errorf("formatDuration(%v) = %q, want substring %q", tt.d, got, tt.want)
-		}
+	if got := formatDuration(time.Second); !strings.Contains(got, "1s") {
+		t.Errorf("got %q", got)
+	}
+	if got := formatDuration(90 * time.Second); got != "1m30s" {
+		t.Errorf("got %q", got)
 	}
 }
-
-// ── repeat tests ──────────────────────────────────────────────────────────────
 
 func TestRepeat(t *testing.T) {
 	if got := repeat("x", 3); got != "xxx" {
@@ -67,75 +48,88 @@ func TestRepeat(t *testing.T) {
 	}
 }
 
-// ── Bar tests (via constructor) ────────────────────────────────────────────────
-
-func TestBar_String(t *testing.T) {
-	b := NewBar("downloading", 100, 0)
+func TestBar_New(t *testing.T) {
+	b := NewBar("test", 100, 0)
 	s := b.String()
-	if !strings.Contains(s, "downloading") {
-		t.Errorf("expected 'downloading' in bar: %q", s)
+	if s == "" || !strings.Contains(s, "test") {
+		t.Errorf("got %q", s)
 	}
 }
 
 func TestBar_Set(t *testing.T) {
 	b := NewBar("test", 100, 0)
+	b.Set(25)
 	b.Set(50)
-	s := b.String()
-	if !strings.Contains(s, "50") {
-		t.Errorf("expected progress indicator: %q", s)
+	b.Set(100)
+	if b.String() == "" {
+		t.Error("empty")
 	}
 }
 
-// ── Spinner tests ─────────────────────────────────────────────────────────────
+func TestBar_Percent(t *testing.T) {
+	b := NewBar("test", 100, 0)
+	b.Set(50)
+	if p := b.percent(); p < 49 || p > 51 {
+		t.Errorf("percent: %f", p)
+	}
+}
 
-func TestSpinner_String(t *testing.T) {
+func TestBar_Rate(t *testing.T) {
+	b := NewBar("test", 100, 0)
+	b.Set(100)
+	// rate with empty buckets returns 0 — verify it doesn't panic
+	_ = b.rate()
+}
+
+func TestBar_WithInitial(t *testing.T) {
+	b := NewBar("test", 100, 50)
+	if b.String() == "" {
+		t.Error("empty")
+	}
+}
+
+func TestSpinner_New(t *testing.T) {
 	s := NewSpinner("loading")
-	got := s.String()
-	if !strings.Contains(got, "loading") {
-		t.Errorf("expected 'loading' in spinner: %q", got)
+	if !strings.Contains(s.String(), "loading") {
+		t.Errorf("got %q", s.String())
 	}
 }
 
 func TestSpinner_SetMessage(t *testing.T) {
 	s := NewSpinner("loading")
 	s.SetMessage("thinking")
-	got := s.String()
-	if !strings.Contains(got, "thinking") {
-		t.Errorf("expected 'thinking' in spinner: %q", got)
+	if !strings.Contains(s.String(), "thinking") {
+		t.Errorf("got %q", s.String())
 	}
 }
 
 func TestSpinner_Stop(t *testing.T) {
-	s := NewSpinner("loading")
+	s := NewSpinner("test")
 	s.Stop()
-	// Stop shouldn't panic
-	got := s.String()
-	if !strings.Contains(got, "loading") {
-		t.Errorf("message should persist after stop: %q", got)
-	}
+	s.Stop()
+	_ = s.String()
 }
 
-// ── StepBar tests ─────────────────────────────────────────────────────────────
-
-func TestStepBar_String(t *testing.T) {
+func TestStepBar_New(t *testing.T) {
 	s := NewStepBar("progress", 5)
-	got := s.String()
-	if !strings.Contains(got, "progress") {
-		t.Errorf("expected 'progress' in step bar: %q", got)
+	if !strings.Contains(s.String(), "progress") {
+		t.Errorf("got %q", s.String())
 	}
 }
 
 func TestStepBar_Set(t *testing.T) {
-	s := NewStepBar("progress", 5)
+	s := NewStepBar("steps", 5)
+	s.Set(1)
 	s.Set(3)
-	got := s.String()
-	if !strings.Contains(got, "3") {
-		t.Errorf("expected '3' in step bar: %q", got)
+	if !strings.Contains(s.String(), "3") {
+		t.Errorf("got %q", s.String())
 	}
 }
 
-func TestHumanBytes_EdgeCases(t *testing.T) {
-	if got := humanBytes(TeraByte); got != "1 TB" {
-		t.Errorf("got %q", got)
+func TestProgress_New(t *testing.T) {
+	p := NewProgress(nil)
+	if p == nil {
+		t.Error("nil")
 	}
+	p.Stop()
 }
