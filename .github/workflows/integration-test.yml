@@ -34,7 +34,8 @@ jobs:
       - name: Install coding tools
         run: |
           npm install -g @earendil-works/pi-coding-agent opencode-ai 2>/dev/null || true
-          echo "Tools installed (or already present)"
+          pip install goose-ai 2>/dev/null || curl -fsSL https://block.github.io/goose/install.sh | sh 2>/dev/null || true
+          echo "Tools installed: $(which pi 2>/dev/null || echo 'pi not found') $(which opencode 2>/dev/null || echo 'opencode not found') $(which goose 2>/dev/null || echo 'goose not found')"
 
       - name: Download test model
         run: |
