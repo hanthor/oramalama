@@ -12,6 +12,31 @@ import (
 	"github.com/hanthor/oramalama/internal/config"
 )
 
+// runOutput executes a command and returns its combined stdout, or an error.
+// Overridable in tests for dependency injection.
+var runOutput = func(ctx context.Context, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if stderr.Len() > 0 {
+			return "", errors.New(strings.TrimSpace(stderr.String()))
+		}
+		return "", err
+	}
+	return stdout.String(), nil
+}
+
+// runQuiet executes a command discarding output, returning any error.
+// Overridable in tests for dependency injection.
+var runQuiet = func(ctx context.Context, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Run()
+}
+
 type Info struct {
 	Name       string `json:"name"`
 	Size       int64  `json:"size"`
@@ -41,11 +66,9 @@ func (m *Manager) List(ctx context.Context) ([]Info, error) {
 	var models []Info
 
 	if m.cfg.RemoteEndpoint != "" {
-		cmd := exec.CommandContext(ctx, "curl", "-sf", "--max-time", "5",
+		out, err := runOutput(ctx, "curl", "-sf", "--max-time", "5",
 			m.cfg.RemoteEndpoint+"/v1/models")
-		var stdout bytes.Buffer
-		cmd.Stdout = &stdout
-		if err := cmd.Run(); err != nil {
+		if err != nil {
 			return nil, err
 		}
 		var resp struct {
@@ -55,7 +78,7 @@ func (m *Manager) List(ctx context.Context) ([]Info, error) {
 				ModifedAt string `json:"modified_at"`
 			} `json:"data"`
 		}
-		if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
+		if err := json.Unmarshal([]byte(out), &resp); err != nil {
 			return nil, err
 		}
 		for _, item := range resp.Data {
@@ -67,58 +90,42 @@ func (m *Manager) List(ctx context.Context) ([]Info, error) {
 		return models, nil
 	}
 
-	cmd := exec.CommandContext(ctx, "ramalama", "list", "--json")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
+	out, err := runOutput(ctx, "ramalama", "list", "--json")
+	if err != nil {
 		return nil, err
 	}
-
-	if err := json.Unmarshal(stdout.Bytes(), &models); err != nil {
+	if err := json.Unmarshal([]byte(out), &models); err != nil {
 		return nil, err
 	}
-
 	return models, nil
 }
 
 func (m *Manager) Show(ctx context.Context, model string) (InspectInfo, error) {
-	cmd := exec.CommandContext(ctx, "ramalama", "inspect", "--json", model)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
+	out, err := runOutput(ctx, "ramalama", "inspect", "--json", model)
+	if err != nil {
 		return InspectInfo{}, err
 	}
-
 	var info InspectInfo
-	if err := json.Unmarshal(stdout.Bytes(), &info); err != nil {
+	if err := json.Unmarshal([]byte(out), &info); err != nil {
 		return InspectInfo{}, err
 	}
-
 	return info, nil
 }
 
 func (m *Manager) InspectField(ctx context.Context, model, key string) string {
-	cmd := exec.CommandContext(ctx, "ramalama", "inspect", "--get", key, model)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
+	out, err := runOutput(ctx, "ramalama", "inspect", "--get", key, model)
+	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(stdout.String())
+	return strings.TrimSpace(out)
 }
 
 func (m *Manager) Pull(ctx context.Context, model string) error {
-	cmd := exec.CommandContext(ctx, "ramalama", "pull", model)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	return cmd.Run()
+	return runQuiet(ctx, "ramalama", "pull", model)
 }
 
 func (m *Manager) Delete(ctx context.Context, model string) error {
-	cmd := exec.CommandContext(ctx, "ramalama", "rm", model)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	return cmd.Run()
+	return runQuiet(ctx, "ramalama", "rm", model)
 }
 
 func (m *Manager) Find(models []Info, wanted string) (Info, bool) {
@@ -154,11 +161,9 @@ func (m *Manager) SizeCheck(modelSizeBytes int64) error {
 }
 
 func (m *Manager) ModelIDFromEndpoint(ctx context.Context, endpoint string) (string, error) {
-	cmd := exec.CommandContext(ctx, "curl", "-sf", "--max-time", "5",
+	out, err := runOutput(ctx, "curl", "-sf", "--max-time", "5",
 		endpoint+"/v1/models")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
+	if err != nil {
 		return "", err
 	}
 
@@ -168,7 +173,7 @@ func (m *Manager) ModelIDFromEndpoint(ctx context.Context, endpoint string) (str
 		} `json:"data"`
 	}
 
-	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
+	if err := json.Unmarshal([]byte(out), &resp); err != nil {
 		return "", err
 	}
 

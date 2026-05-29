@@ -1,7 +1,12 @@
 package runtime
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -554,5 +559,162 @@ func TestConfigurePi_MergesExisting(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "anthropic") {
 		t.Error("expected existing provider preserved in merged config")
+	}
+}
+
+// ── Mock-backed I/O tests ─────────────────────────────────────────────────────
+
+func TestInstalledModels_Mock(t *testing.T) {
+	old := execCapture
+	defer func() { execCapture = old }()
+
+	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		return `[{"name":"a-model","size":100},{"name":"b-model","size":200}]`, nil
+	}
+
+	models, err := InstalledModels(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("got %d models", len(models))
+	}
+	if models[0].Name != "a-model" || models[1].Name != "b-model" {
+		t.Errorf("models: %+v", models)
+	}
+}
+
+func TestInstalledModels_Error(t *testing.T) {
+	old := execCapture
+	defer func() { execCapture = old }()
+
+	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		return "", errors.New("ramalama not found")
+	}
+	_, err := InstalledModels(context.Background())
+	if err == nil {
+		t.Error("expected error")
+	}
+}
+
+func TestInspectModel_Mock(t *testing.T) {
+	old := execCapture
+	defer func() { execCapture = old }()
+
+	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		return `{"Name":"model","Format":"GGUF","Version":3}`, nil
+	}
+
+	info, err := InspectModel(context.Background(), "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Format != "GGUF" || info.Version != 3 {
+		t.Errorf("info: %+v", info)
+	}
+}
+
+func TestInspectField_Mock(t *testing.T) {
+	old := execCapture
+	defer func() { execCapture = old }()
+
+	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		return "amd\n", nil
+	}
+	got := InspectField(context.Background(), "model", "general.architecture")
+	if got != "amd" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestEndpoint_Default(t *testing.T) {
+	old := execCapture
+	defer func() { execCapture = old }()
+
+	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		return "", errors.New("no container")
+	}
+	ep := Endpoint(context.Background())
+	if ep != "http://127.0.0.1:8080" {
+		t.Errorf("got %q", ep)
+	}
+}
+
+func TestModelIDFromEndpoint_Mock(t *testing.T) {
+	old := httpDo
+	defer func() { httpDo = old }()
+
+	httpDo = func(req *http.Request) (*http.Response, error) {
+		body := io.NopCloser(strings.NewReader(`{"data":[{"id":"served-model"}]}`))
+		return &http.Response{StatusCode: 200, Body: body}, nil
+	}
+
+	id, err := ModelIDFromEndpoint(context.Background(), "http://localhost:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "served-model" {
+		t.Errorf("got %q", id)
+	}
+}
+
+func TestEnsureServer_ModelRequired(t *testing.T) {
+	_, _, err := EnsureServer(context.Background(), "", false, nil, nil)
+	if err == nil {
+		t.Error("expected error for empty model")
+	}
+}
+
+func TestEnsureServer_ModelNotFound(t *testing.T) {
+	oldCapture := execCapture
+	defer func() { execCapture = oldCapture }()
+
+	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		return `[]`, nil
+	}
+
+	var out bytes.Buffer
+	_, _, err := EnsureServer(context.Background(), "nonexistent-model", false, &out, &out)
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error: %v", err)
+	}
+}
+
+func TestResolveShowModel_FromServer(t *testing.T) {
+	oldCap := execCapture
+	oldHTTP := httpDo
+	defer func() { execCapture = oldCap; httpDo = oldHTTP }()
+
+	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		return "", errors.New("no podman")
+	}
+	httpDo = func(req *http.Request) (*http.Response, error) {
+		body := io.NopCloser(strings.NewReader(`{"data":[{"id":"running-model"}]}`))
+		return &http.Response{StatusCode: 200, Body: body}, nil
+	}
+
+	model, err := ResolveShowModel(context.Background(), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model != "running-model" {
+		t.Errorf("got %q", model)
+	}
+}
+
+func TestResolveRunTarget_CLIModel(t *testing.T) {
+	model, prompt, err := ResolveRunTarget(context.Background(), "test-model", []string{"hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model != "test-model" || prompt != "hello" {
+		t.Errorf("model=%q prompt=%q", model, prompt)
+	}
+}
+
+func TestResolveRunTarget_NoPrompt(t *testing.T) {
+	_, _, err := ResolveRunTarget(context.Background(), "model", nil)
+	if err == nil {
+		t.Error("expected error")
 	}
 }

@@ -17,6 +17,37 @@ import (
 	"github.com/hanthor/oramalama/internal/config"
 )
 
+// ── Injectable I/O (overridable in tests) ─────────────────────────────────────
+
+// execCapture runs a command and returns its trimmed stdout. Tests can override.
+var execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if stderr.Len() > 0 {
+			return "", errors.New(strings.TrimSpace(stderr.String()))
+		}
+		return "", err
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+// execRun runs a command, wiring stdin/stdout/stderr. Tests can override.
+var execRun = func(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	cmd.Stdin = os.Stdin
+	return cmd.Run()
+}
+
+// httpDo performs an HTTP request. Tests can override.
+var httpDo = func(req *http.Request) (*http.Response, error) {
+	return http.DefaultClient.Do(req)
+}
+
 const (
 	containerName = "oramalama"
 	localHost     = "127.0.0.1"
@@ -45,7 +76,7 @@ type InspectInfo struct {
 
 // InstalledModels returns the list of locally installed models.
 func InstalledModels(ctx context.Context) ([]ModelInfo, error) {
-	out, err := capture(ctx, "ramalama", "list", "--json")
+	out, err := execCapture(ctx, "ramalama", "list", "--json")
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +89,7 @@ func InstalledModels(ctx context.Context) ([]ModelInfo, error) {
 
 // InspectModel returns detailed info about a model.
 func InspectModel(ctx context.Context, model string) (InspectInfo, error) {
-	out, err := capture(ctx, "ramalama", "inspect", "--json", model)
+	out, err := execCapture(ctx, "ramalama", "inspect", "--json", model)
 	if err != nil {
 		return InspectInfo{}, err
 	}
@@ -71,7 +102,7 @@ func InspectModel(ctx context.Context, model string) (InspectInfo, error) {
 
 // InspectField returns a single field from model inspection.
 func InspectField(ctx context.Context, model, key string) string {
-	out, err := capture(ctx, "ramalama", "inspect", "--get", key, model)
+	out, err := execCapture(ctx, "ramalama", "inspect", "--get", key, model)
 	if err != nil {
 		return ""
 	}
@@ -80,11 +111,11 @@ func InspectField(ctx context.Context, model, key string) string {
 
 // Endpoint returns the running server endpoint URL.
 func Endpoint(ctx context.Context) string {
-	out, err := capture(ctx, "podman", "inspect", "--format={{.State.Status}}", containerName)
-	if err != nil || strings.TrimSpace(out) != "running" {
+	out, err := execCapture(ctx, "podman", "inspect", "--format={{.State.Status}}", containerName)
+	if err != nil || out != "running" {
 		return "http://" + localHost + ":" + localPort
 	}
-	portOut, err := capture(ctx, "podman", "port", containerName)
+	portOut, err := execCapture(ctx, "podman", "port", containerName)
 	if err != nil {
 		return "http://" + localHost + ":" + localPort
 	}
@@ -109,7 +140,7 @@ func ModelIDFromEndpoint(ctx context.Context, endpoint string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpDo(req)
 	if err != nil {
 		return "", err
 	}
@@ -132,18 +163,16 @@ func ModelIDFromEndpoint(ctx context.Context, endpoint string) (string, error) {
 }
 
 // EnsureServer ensures the requested model is running, starting or stopping servers as needed.
-// Returns (endpoint, servedModelID, error).
 func EnsureServer(ctx context.Context, model string, dryRun bool, stdout, stderr io.Writer) (string, string, error) {
 	if model == "" {
-		return "", "", errors.New("the Go rewrite currently requires --model for serve/launch")
+		return "", "", errors.New("model requires --model for serve/launch")
 	}
 
 	// 1. Check if the service is in a failed state and attempt to recover it
 	if UnitExists(ctx, quadletUnit) {
-		status, _ := capture(ctx, "systemctl", "--user", "is-active", quadletUnit)
-		if strings.TrimSpace(status) == "failed" {
+		status, _ := execCapture(ctx, "systemctl", "--user", "is-active", quadletUnit)
+		if status == "failed" {
 			fmt.Fprintf(stdout, "service %s is in failed state, attempting to re-sync...\n", quadletUnit)
-			// Re-run the ramalama config to fix the model paths in the generated quadlet
 			if err := runOrPrint(ctx, dryRun, "ramalama", []string{"serve", "--detach", "--name", containerName}, stdout, stderr); err != nil {
 				fmt.Fprintf(stderr, "warning: failed to re-sync service: %v\n", err)
 			}
@@ -222,14 +251,13 @@ func EnsureServer(ctx context.Context, model string, dryRun bool, stdout, stderr
 	return endpoint, servedModel, nil
 }
 
-// StopCompetingLocalModels stops all running servers except the one for the selected model.
 func stopCompetingLocalModels(ctx context.Context, selectedModel string, dryRun bool, stdout, stderr io.Writer) error {
 	keepUnit := ""
 	if selectedModel == defaultModel {
 		keepUnit = quadletUnit
 	}
 
-	out, _ := capture(ctx, "systemctl", "--user", "list-units", "--type=service", "--state=active", "--plain", "ramalama-*", "--no-legend")
+	out, _ := execCapture(ctx, "systemctl", "--user", "list-units", "--type=service", "--state=active", "--plain", "ramalama-*", "--no-legend")
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -247,7 +275,7 @@ func stopCompetingLocalModels(ctx context.Context, selectedModel string, dryRun 
 		}
 	}
 
-	out, _ = capture(ctx, "ramalama", "ps", "--noheading")
+	out, _ = execCapture(ctx, "ramalama", "ps", "--noheading")
 	if strings.Contains(out, containerName) {
 		if err := runOrPrint(ctx, dryRun, "ramalama", []string{"stop", containerName}, stdout, stderr); err != nil {
 			return err
@@ -269,7 +297,7 @@ func WaitForServer(ctx context.Context, endpoint string) error {
 	for {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err == nil {
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := httpDo(req)
 			if err == nil {
 				resp.Body.Close()
 				if resp.StatusCode == http.StatusOK {
@@ -413,38 +441,12 @@ func ResolveRunTarget(ctx context.Context, cliModel string, args []string) (stri
 	}
 }
 
-// ---- internal helpers ----
-
-type runner struct {
-	stdout io.Writer
-	stderr io.Writer
-}
-
-func capture(ctx context.Context, name string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	if err != nil {
-		if stderr.Len() > 0 {
-			return "", errors.New(strings.TrimSpace(stderr.String()))
-		}
-		return "", err
-	}
-	return strings.TrimSpace(stdout.String()), nil
-}
-
 func runOrPrint(ctx context.Context, dryRun bool, name string, args []string, stdout, stderr io.Writer) error {
 	if dryRun {
 		fmt.Fprintf(stdout, "[dry-run] %s %s\n", name, strings.Join(quoteArgs(args), " "))
 		return nil
 	}
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	cmd.Stdin = os.Stdin
-	return cmd.Run()
+	return execRun(ctx, name, args, stdout, stderr)
 }
 
 func intPtr(i int) *int { return &i }
