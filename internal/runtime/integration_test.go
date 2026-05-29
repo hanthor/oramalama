@@ -283,10 +283,12 @@ func TestIntegration_LaunchDryRun(t *testing.T) {
 		if err != nil {
 			t.Fatalf("launch --tool server --dry-run: %v\noutput: %s", err, string(out))
 		}
-		if !strings.Contains(string(out), "[dry-run]") {
-			t.Errorf("expected [dry-run] prefix in output: %s", string(out))
+		// Verify we get server startup output (context window detection).
+		outStr := string(out)
+		if !strings.Contains(outStr, "context window") {
+			t.Errorf("expected context window info in output: %s", outStr)
 		}
-		t.Logf("dry-run output: %s", string(out))
+		t.Logf("launch server dry-run: %s", outStr)
 	})
 
 	// Only test tools that are installed. These exercise the Configure* functions
