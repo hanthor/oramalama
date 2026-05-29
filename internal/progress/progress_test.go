@@ -133,3 +133,28 @@ func TestProgress_New(t *testing.T) {
 	}
 	p.Stop()
 }
+
+func TestFormatDuration_Hour(t *testing.T) {
+	s := formatDuration(time.Hour)
+	if !strings.Contains(s, "1h") { t.Errorf("got %q", s) }
+}
+
+func TestBar_Percent_ZeroMax(t *testing.T) {
+	b := NewBar("test", 0, 0)
+	if p := b.percent(); p != 0 { t.Errorf("got %f", p) }
+}
+
+func TestBar_Rate_WithTime(t *testing.T) {
+	b := NewBar("test", 100, 0)
+	time.Sleep(10 * time.Millisecond)
+	b.Set(50)
+	// This should give a rate now that buckets have data
+	r := b.rate()
+	_ = r // just verify no panic
+}
+
+func TestBar_String_Empty(t *testing.T) {
+	b := NewBar("", 100, 0)
+	s := b.String()
+	if s == "" { t.Error("expected non-empty") }
+}

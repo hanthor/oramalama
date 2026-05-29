@@ -166,3 +166,37 @@ func TestAllNames(t *testing.T) {
 		if c.Name() == "" { t.Errorf("empty name for %T", c) }
 	}
 }
+
+func TestListAliases(t *testing.T) {
+	a := (&listCmd{}).Aliases()
+	if len(a) != 1 || a[0] != "ls" { t.Errorf("got %v", a) }
+}
+
+func TestSearchAliasesCheck(t *testing.T) {
+	a := (&searchCmd{nil}).Aliases()
+	if len(a) != 2 { t.Errorf("got %d", len(a)) }
+}
+
+func TestStopCmd_Mock(t *testing.T) {
+	old := runnerExec; oldC := runnerCapture
+	defer func() { runnerExec = old; runnerCapture = oldC }()
+	runnerCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		return "", errors.New("none")
+	}
+	called := false
+	runnerExec = func(ctx context.Context, name string, args ...string) error {
+		called = true; return nil
+	}
+	r := NewRunner(new(bytes.Buffer), new(bytes.Buffer))
+	if err := (&stopCmd{r: r}).Run(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if !called { t.Error("not called") }
+}
+
+func TestDispatch_Usage(t *testing.T) {
+	var s bytes.Buffer
+	d := NewDispatcher(NewRunner(new(bytes.Buffer), &s))
+	d.Dispatch(context.Background(), "bad", nil)
+	if !strings.Contains(s.String(), "usage") { t.Error("no usage") }
+}
