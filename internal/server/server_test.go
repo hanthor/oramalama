@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -638,5 +639,151 @@ func TestGenerateHandler_BadJSON(t *testing.T) {
 
 	if w.Code != 400 {
 		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestErrorJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.GET("/error", func(c *gin.Context) { s.errorJSON(c, 500, errors.New("boom")) })
+
+	req := httptest.NewRequest("GET", "/error", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != 500 {
+		t.Errorf("status: %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "boom") {
+		t.Errorf("body: %s", w.Body.String())
+	}
+}
+
+func TestDeleteModelHandler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/api/delete", s.deleteModelHandler)
+
+	body := `{"model":"test"}`
+	req := httptest.NewRequest("POST", "/api/delete", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestCopyModelHandler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/api/copy", s.copyModelHandler)
+
+	body := `{"source":"a","destination":"b"}`
+	req := httptest.NewRequest("POST", "/api/copy", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestEmbedHandler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/api/embed", s.embedHandler)
+
+	body := `{"model":"test","input":"text"}`
+	req := httptest.NewRequest("POST", "/api/embed", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Errorf("status: %d, body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEmbeddingsHandler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/api/embeddings", s.embeddingsHandler)
+
+	body := `{"model":"test","prompt":"text"}`
+	req := httptest.NewRequest("POST", "/api/embeddings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestOpenAICompletionHandler_NonStream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/v1/completions", s.openaiCompletionHandler)
+
+	body := `{"model":"test","prompt":"hello","stream":false}`
+	req := httptest.NewRequest("POST", "/v1/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestOpenAIEmbeddingsHandler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/v1/embeddings", s.openaiEmbeddingsHandler)
+
+	body := `{"model":"test","input":"text"}`
+	req := httptest.NewRequest("POST", "/v1/embeddings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestChatHandler_NonStream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/api/chat", s.chatHandler)
+
+	body := `{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":false}`
+	req := httptest.NewRequest("POST", "/api/chat", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Errorf("status: %d, body: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAnthropicMessagesHandler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/v1/messages", s.anthropicMessagesHandler)
+
+	body := `{"model":"test","messages":[{"role":"user","content":"hi"}],"max_tokens":100,"stream":false}`
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Errorf("status: %d, body: %s", w.Code, w.Body.String())
 	}
 }
