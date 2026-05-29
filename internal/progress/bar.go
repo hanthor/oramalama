@@ -10,6 +10,14 @@ import (
 	"golang.org/x/term"
 )
 
+// ── Injectable I/O (overridable in tests) ─────────────────────────────────────
+
+// termSize returns the terminal width and height. Injectable for tests.
+var termSize = func(fd int) (int, int, error) { return term.GetSize(int(os.Stderr.Fd())) }
+
+// newTicker creates a time.Ticker. Injectable for tests.
+var newTicker = func(d time.Duration) *time.Ticker { return time.NewTicker(d) }
+
 const (
 	Byte     = 1
 	KiloByte = Byte * 1000
@@ -100,7 +108,7 @@ func formatDuration(d time.Duration) string {
 }
 
 func (b *Bar) String() string {
-	termWidth, _, err := term.GetSize(int(os.Stderr.Fd()))
+	termWidth, _, err := termSize(int(os.Stderr.Fd()))
 	if err != nil {
 		termWidth = defaultTermWidth
 	}

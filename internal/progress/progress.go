@@ -7,8 +7,6 @@ import (
 	"os"
 	"sync"
 	"time"
-
-	"golang.org/x/term"
 )
 
 const (
@@ -91,7 +89,7 @@ func (p *Progress) Add(key string, state State) {
 }
 
 func (p *Progress) render() {
-	_, termHeight, err := term.GetSize(int(os.Stderr.Fd()))
+	_, termHeight, err := termSize(int(os.Stderr.Fd()))
 	if err != nil {
 		termHeight = defaultTermHeight
 	}
@@ -127,7 +125,7 @@ func (p *Progress) render() {
 }
 
 func (p *Progress) start() {
-	p.ticker = time.NewTicker(100 * time.Millisecond)
+	p.ticker = newTicker(100 * time.Millisecond)
 	for range p.ticker.C {
 		p.render()
 	}
