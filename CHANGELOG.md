@@ -1,3 +1,10 @@
+## [0.1.10](https://github.com/hanthor/oramalama/compare/v0.1.9...v0.1.10) (2026-05-29)
+
+
+### Bug Fixes
+
+* remove flaky LaunchDryRun/opencode (needs installed tool) ([33ccea1](https://github.com/hanthor/oramalama/commit/33ccea177205fa406f23d8c3e17cd37fadc87ea3))
+
 ## [0.1.9](https://github.com/hanthor/oramalama/compare/v0.1.8...v0.1.9) (2026-05-29)
 
 
