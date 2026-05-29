@@ -295,3 +295,69 @@ func TestLaunchCmd_UnknownTool(t *testing.T) {
 	err := cmd.Run(context.Background(), nil)
 	if err == nil { t.Error("expected error") }
 }
+
+func TestLaunchCmd_DryRun_Server(t *testing.T) {
+	oldC := runtime.ExecCapture; oldH := runtime.HTTPDo
+	defer func() { runtime.ExecCapture = oldC; runtime.HTTPDo = oldH }()
+	runtime.ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		if args[0] == "list" { return `[{"name":"t","size":100}]`, nil }
+		return "", errors.New("no")
+	}
+	runtime.HTTPDo = func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"data":[{"id":"other"}]}`))}, nil
+	}
+	r := NewRunner(new(bytes.Buffer), new(bytes.Buffer))
+	r.CLIModel = "t"
+	r.DryRun = true
+	cmd := newLaunchCmd(r)
+	cmd.picker = mockPicker{tool: "server"}
+	if err := cmd.Run(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLaunchCmd_Pi_DryRun(t *testing.T) {
+	oldC := runtime.ExecCapture; oldH := runtime.HTTPDo; oldR := runtime.ExecRun
+	defer func() { runtime.ExecCapture = oldC; runtime.HTTPDo = oldH; runtime.ExecRun = oldR }()
+	runtime.ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		if args[0] == "list" { return `[{"name":"t","size":100}]`, nil }
+		return "", errors.New("no")
+	}
+	runtime.HTTPDo = func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"data":[{"id":"other"}]}`))}, nil
+	}
+	runtime.ExecRun = func(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error { return nil }
+	var out bytes.Buffer
+	r := NewRunner(&out, new(bytes.Buffer))
+	r.CLIModel = "t"
+	r.DryRun = true
+	cmd := newLaunchCmd(r)
+	cmd.picker = mockPicker{tool: "pi"}
+	if err := cmd.Run(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "pi") { t.Errorf("out: %s", out.String()) }
+}
+
+func TestLaunchCmd_OpenCode_DryRun(t *testing.T) {
+	oldC := runtime.ExecCapture; oldH := runtime.HTTPDo; oldR := runtime.ExecRun
+	defer func() { runtime.ExecCapture = oldC; runtime.HTTPDo = oldH; runtime.ExecRun = oldR }()
+	runtime.ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		if args[0] == "list" { return `[{"name":"t","size":100}]`, nil }
+		return "", errors.New("no")
+	}
+	runtime.HTTPDo = func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"data":[{"id":"other"}]}`))}, nil
+	}
+	runtime.ExecRun = func(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error { return nil }
+	var out bytes.Buffer
+	r := NewRunner(&out, new(bytes.Buffer))
+	r.CLIModel = "t"
+	r.DryRun = true
+	cmd := newLaunchCmd(r)
+	cmd.picker = mockPicker{tool: "opencode"}
+	if err := cmd.Run(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "opencode") { t.Errorf("out: %s", out.String()) }
+}

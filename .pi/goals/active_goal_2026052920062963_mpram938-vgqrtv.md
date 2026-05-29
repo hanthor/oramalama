@@ -5,12 +5,12 @@
   "status": "active",
   "autoContinue": true,
   "usage": {
-    "tokensUsed": 560377,
-    "activeSeconds": 1923
+    "tokensUsed": 562458,
+    "activeSeconds": 1967
   },
   "sisyphus": true,
   "createdAt": "2026-05-29T19:06:29.636Z",
-  "updatedAt": "2026-05-29T19:39:12.492Z",
+  "updatedAt": "2026-05-29T19:39:57.994Z",
   "activePath": ".pi/goals/active_goal_2026052920062963_mpram938-vgqrtv.md",
   "taskList": {
     "tasks": [
@@ -78,8 +78,8 @@ Get every non-tui package to 90%+ test coverage: progress(85→90), api(82→90)
 - Status: sisyphus running
 - Auto-continue: on
 - Sisyphus mode: yes (prompt/criteria style)
-- Time spent: 32m03s
-- Tokens used: 560K (560,377) tokens
+- Time spent: 32m47s
+- Tokens used: 562K (562,458) tokens
 ## Tasks
 
 <!-- blockCompletion: false -->
