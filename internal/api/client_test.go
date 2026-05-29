@@ -364,3 +364,36 @@ func TestClient_Copy_Error(t *testing.T) {
 		t.Error("expected copy error")
 	}
 }
+func TestClient_Status(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"uptime":123,"num_thread":4,"num_thread_decode":2}`))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	resp, err := c.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Uptime != 123 {
+		t.Errorf("uptime: %d", resp.Uptime)
+	}
+}
+
+func TestClient_EmbeddingsAlias(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"embedding":[0.1,0.2]}`))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	resp, err := c.Embeddings(context.Background(), &EmbeddingRequest{Model: "m", Prompt: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Embedding) != 2 {
+		t.Errorf("embedding: %v", resp.Embedding)
+	}
+}
