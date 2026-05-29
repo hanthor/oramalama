@@ -1,3 +1,10 @@
+## [0.1.11](https://github.com/hanthor/oramalama/compare/v0.1.10...v0.1.11) (2026-05-29)
+
+
+### Bug Fixes
+
+* make coding tool tests skip when tools not installed ([063312c](https://github.com/hanthor/oramalama/commit/063312c87ccc0e61ba733d237ac090f0dbfe08ed))
+
 ## [0.1.10](https://github.com/hanthor/oramalama/compare/v0.1.9...v0.1.10) (2026-05-29)
 
 
