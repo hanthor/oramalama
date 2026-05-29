@@ -1,3 +1,10 @@
+## [0.1.12](https://github.com/hanthor/oramalama/compare/v0.1.11...v0.1.12) (2026-05-29)
+
+
+### Bug Fixes
+
+* remove old GooseLaunch and AllToolConfigs (replaced by CodingToolConfig) ([a08fc39](https://github.com/hanthor/oramalama/commit/a08fc398da7c5f38fa1d6476e7f25353a44755f6))
+
 ## [0.1.11](https://github.com/hanthor/oramalama/compare/v0.1.10...v0.1.11) (2026-05-29)
 
 
