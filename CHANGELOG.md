@@ -1,3 +1,10 @@
+## [0.1.7](https://github.com/hanthor/oramalama/compare/v0.1.6...v0.1.7) (2026-05-29)
+
+
+### Bug Fixes
+
+* integration test expectations for launch dry-run output ([094d112](https://github.com/hanthor/oramalama/commit/094d112b07f6612f7463e7bed3952eede95e3344))
+
 ## [0.1.6](https://github.com/hanthor/oramalama/compare/v0.1.5...v0.1.6) (2026-05-29)
 
 
