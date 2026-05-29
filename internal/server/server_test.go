@@ -1009,3 +1009,49 @@ func TestStopAndDoneChannels(t *testing.T) {
 	}
 	s.Stop()
 }
+func TestCopyHandler_BadJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/api/copy", s.copyModelHandler)
+	req := httptest.NewRequest("POST", "/api/copy", strings.NewReader("bad"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+func TestEmbeddingsHandler_BadJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/api/embeddings", s.embeddingsHandler)
+	req := httptest.NewRequest("POST", "/api/embeddings", strings.NewReader("bad"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+func TestOpenAICompletionHandler_BadJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/v1/completions", s.openaiCompletionHandler)
+	req := httptest.NewRequest("POST", "/v1/completions", strings.NewReader("bad"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+func TestServer_New(t *testing.T) {
+	s := New(&config.Config{})
+	if s == nil || s.client == nil {
+		t.Error("expected non-nil server with client")
+	}
+	s.Stop()
+}

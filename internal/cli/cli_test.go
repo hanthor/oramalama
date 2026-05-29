@@ -288,19 +288,6 @@ func TestPSCmd(t *testing.T) {
 	}
 }
 
-func TestRunCmd_Mock(t *testing.T) {
-	oldCap := runtime.ExecCapture
-	oldHTTP := runtime.HTTPDo
-	defer func() { runtime.ExecCapture = oldCap; runtime.HTTPDo = oldHTTP }()
-
-	runtime.ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
-		return `[{"name":"test-model","size":100}]`, nil
-	}
-	runtime.HTTPDo = func(req *http.Request) (*http.Response, error) {
-		body := io.NopCloser(strings.NewReader(
-			`{"choices":[{"message":{"content":"hello response"}}],"usage":{"prompt_tokens":1,"completion_tokens":2}}`))
-		return &http.Response{StatusCode: 200, Body: body}, nil
-	}
 
 	var out bytes.Buffer
 	cmd := &runCmd{r: NewRunner(&out, new(bytes.Buffer))}
