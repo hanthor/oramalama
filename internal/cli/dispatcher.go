@@ -56,7 +56,7 @@ var runnerPostJSON = func(ctx context.Context, endpoint, path string, reqBody in
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer sk-no-key-required")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := cliHTTPClient().Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -71,6 +71,9 @@ var runnerPostJSON = func(ctx context.Context, endpoint, path string, reqBody in
 	}
 	return payload, nil
 }
+
+// cliHTTPClient returns the HTTP client to use. Injectable for tests.
+var cliHTTPClient = func() *http.Client { return http.DefaultClient }
 
 // Command defines the interface for all CLI subcommands.
 type Command interface {

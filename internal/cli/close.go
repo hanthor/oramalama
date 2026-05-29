@@ -43,7 +43,7 @@ func (c *closeCmd) Run(ctx context.Context, args []string) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer sk-no-key-required")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := cliHTTPClient().Do(req)
 	if err != nil {
 		return err
 	}
