@@ -3,26 +3,25 @@
 **oramalama** brings the CLI nicities of [ollama](https://ollama.com) to [RamaLama](https://github.com/containers/ramalama) — hardware-aware model management, a full interactive REPL, coding-tool integrations, and TUI polish, while using ramalama + llama.cpp as the inference backend.
 
 ```
-oramalama [--remote <url>] [--model <name>] [--dry-run] <subcommand>
+oramalama [--model <name>] [--dry-run] [--version] <subcommand>
 ```
 
 ---
 
 ## Features
 
-- **ollama-style subcommands** — `run`, `serve`, `launch`, `list`, `pull`, `ps`, `stop`, `show`, `rm`, `search`, `discover`
-- **Interactive REPL** — streaming chat with slash commands (`/set system`, `/save`, `/load`, `/clear`, `/switch`, …)
-- **Thinking mode** — `--think` surfaces model reasoning; `--hidethinking` strips `<think>` blocks
+- **ollama-style subcommands** — `run`, `serve`, `launch`, `list`, `pull`, `ps`, `stop`, `show`, `rm`, `search`, `close`
+- **Always-on router daemon** — `oramalama-router` starts a small Qwen3-4B dispatcher that routes requests to the right large backend, with idle-timeout to reclaim VRAM
+- **Interactive REPL** — streaming chat with OpenAI-compatible API
 - **tok/s stats** — `--verbose` prints timing after every response
 - **Hardware auto-detection** — Strix Halo (AMD Ryzen AI Max) detected automatically; ramalama picks the right image for NVIDIA / standard AMD / CPU on all other hardware
-- **Network discovery** — `oramalama discover` scans LAN + Tailscale for ramalama servers, deduplicates multi-IP results, and lets you connect or switch models remotely
-- **Remote inference** — point at any ramalama server over Tailscale / LAN with `--remote`; SSH-based remote model switching built in
-- **llmfit integration** — `oramalama search` recommends models that fit your GPU; press `i` in any model picker for a full hardware-fit panel
-- **Open WebUI** — ramalama bundles Open WebUI; `oramalama launch --tool open-webui` starts it instantly
-- **Full tool ecosystem** — `oramalama launch` supports 12 tools across 3 categories:
+- **Remote inference** — point at any ramalama server over Tailscale / LAN
+- **llmfit integration** — `oramalama search` recommends models that fit your GPU; the model picker shows a full hardware-fit panel
+- **OpenAI / Ollama / Anthropic compatible API server** — `oramalama serve` starts a full proxy server that translates between OpenAI, Ollama, and Anthropic protocols
+- **Full tool ecosystem** — `oramalama launch` supports 6+ tools:
   - *Coding:* OpenCode, Pi, Goose CLI, VS Code (Continue/Cline)
-  - *Web UIs:* llama.cpp built-in, Open WebUI, AnythingLLM, NextChat, Lobe Chat, big-AGI
   - *Terminal:* aichat, tgpt
+  - Always-on router daemon
 - **Systemd quadlet** — default model runs as a persistent user service with auto-restart
 - **Tab completion** — bash and zsh completions included
 
@@ -46,12 +45,23 @@ curl -fsSL https://github.com/hanthor/oramalama/releases/latest/download/oramala
 sudo mv oramalama /usr/local/bin
 ```
 
-### Legacy: From source
+### From source (Go)
 
 ```bash
-bash install.sh                     # installs to ~/.local/bin
-bash install.sh --prefix /usr/local # system-wide (may need sudo)
-bash install.sh --uninstall         # remove
+git clone https://github.com/hanthor/oramalama.git
+cd oramalama
+go build -o oramalama ./cmd/oramalama-go
+go build -o oramalama-router ./cmd/oramalama-router  # optional
+sudo mv oramalama* /usr/local/bin
+```
+
+### Legacy: Bash script
+
+The original bash implementation lives in `legacy/oramalama.bash`. It's still available for reference but is no longer the primary distribution.
+
+```bash
+bash install.sh           # installs to ~/.local/bin
+bash install.sh --legacy  # force bash install
 ```
 
 ### Requirements
@@ -59,62 +69,34 @@ bash install.sh --uninstall         # remove
 | Dep | Required | Install |
 |---|---|---|
 | `ramalama` | ✅ | https://github.com/containers/ramalama |
-| `gum` | ✅ | https://github.com/charmbracelet/gum |
-| `jq` | ✅ | https://jqlang.github.io/jq/download/ |
 | `curl` | ✅ | system package manager |
 | `llmfit` | optional | https://github.com/jmorganca/llmfit |
-| `nmap` | optional (faster discovery) | system package manager |
 | `opencode` | optional | https://opencode.ai |
 | `pi` | optional | https://pi.dev |
 | `goose` | optional | https://block.github.io/goose/ |
+
+> **Note:** The legacy bash version also requires `gum` and `jq`. The Go binary does not need them.
 
 ---
 
 ## Subcommands
 
-### `run [model]` — interactive chat REPL
+### `run [model] [prompt]` — chat completion
 
 ```bash
-oramalama run
-oramalama run hf://unsloth/gemma-4-31B-it-GGUF:Q4_K_M
-oramalama run --think --verbose
-oramalama run --hidethinking
+oramalama run                    # prompts for model + prompt interactively
+oramalama run hf://unsloth/gemma-4-31B-it-GGUF:Q4_K_M "hello"
+oramalama run --verbose
 ```
 
-Starts the inference server (if not already running) and opens a streaming REPL.
+Starts the inference server (if not already running) and sends a chat completion.
 
 **Flags:**
 
 | Flag | Effect |
 |---|---|
-| `--think` | Show model reasoning/thinking content |
-| `--hidethinking` | Suppress `<think>…</think>` blocks |
 | `--verbose` | Print tok/s, prompt tokens, generated tokens after each reply |
-
-**Slash commands inside the REPL:**
-
-| Command | Effect |
-|---|---|
-| `/help` | Show all slash commands |
-| `/set system <text>` | Set a system prompt (empty to clear) |
-| `/set parameter <key> <value>` | Set a generation param (`temperature`, `top_p`, …) |
-| `/clear` | Wipe conversation history |
-| `/save <name>` | Save session to `~/.config/oramalama/sessions/<name>` |
-| `/load <name>` | Restore a saved session |
-| `/show` | Print current model, endpoint, SSH host, system prompt, params |
-| `/switch` | Switch the running model (SSH for remote, restart for local) |
-| `/bye` | Exit |
-
----
-
-### `serve [model]` — start inference server
-
-```bash
-oramalama serve
-oramalama serve hf://unsloth/Qwen3-Coder-Next-GGUF:Q4_K_M
-```
-
-Starts the server detached. Context window and serve flags are auto-tuned per model size and hardware.
+| `--format json` | Return raw JSON response instead of formatted text |
 
 ---
 
@@ -123,7 +105,8 @@ Starts the server detached. Context window and serve flags are auto-tuned per mo
 ```bash
 oramalama launch                        # two-level interactive menu
 oramalama launch --tool opencode        # jump straight to a tool
-oramalama launch --tool open-webui
+oramalama launch --tool goose
+oramalama launch --router               # use always-on router daemon
 ```
 
 Starts the inference server (if not already running), then presents a **two-level menu**:
@@ -131,10 +114,8 @@ Starts the inference server (if not already running), then presents a **two-leve
 ```
 What would you like to launch?
   Coding Tools
-  Web UIs
-  Terminal Chat
-  Only Start Server
-  Suggest Models (llmfit)
+  Start Server Only
+  Search Models
 ```
 
 #### Coding Tools
@@ -146,34 +127,20 @@ What would you like to launch?
 | Goose CLI | `goose` | Launched with `OPENAI_HOST` / `OPENAI_API_KEY` env vars |
 | VS Code | `vscode` | Opens `code .`; install [Continue](https://continue.dev) or [Cline](https://github.com/cline/cline) extension |
 
-#### Web UIs
+#### Router daemon
 
-All container UIs require `podman` or `docker`. They auto-rewrite `127.0.0.1` → `host.containers.internal` so the container can reach the host API. A browser tab opens automatically.
+The `--router` flag (or "OpenCode [router daemon]" in the TUI menu) starts the always-on router daemon (`oramalama-router`). This runs a small Qwen3-4B model that dispatches requests to the right large backend, with idle-timeout to reclaim VRAM.
 
-| Tool | `--tool` | Port | Image |
-|---|---|---|---|
-| llama.cpp built-in | `webui` | same as API | built into ramalama — always available |
-| Open WebUI | `open-webui` | 3000 | `ghcr.io/open-webui/open-webui:main` |
-| AnythingLLM | `anythingllm` | 3001 | `mintplexlabs/anythingllm` |
-| NextChat | `nextchat` | 3002 | `yidadaa/chatgpt-next-web` |
-| Lobe Chat | `lobe-chat` | 3210 | `lobehub/lobe-chat` |
-| big-AGI | `big-agi` | 3003 | `ghcr.io/enricoros/big-agi` |
+---
 
-The llama.cpp built-in Web UI is **always on** at the server root URL (e.g. `http://localhost:8080`). No extra setup needed.
+### `serve [model]` — start inference server
 
-#### Terminal Chat
+```bash
+oramalama serve
+oramalama serve hf://unsloth/Qwen3-Coder-Next-GGUF:Q4_K_M
+```
 
-| Tool | `--tool` | Notes |
-|---|---|---|
-| aichat | `aichat` | Sets `OPENAI_API_BASE` + `OPENAI_API_KEY` |
-| tgpt | `tgpt` | `--provider openai --url .../v1/chat/completions` |
-
-#### Utility options
-
-| Option | `--tool` |
-|---|---|
-| Only Start Server | `server` |
-| Suggest Models (llmfit) | `suggest` |
+Starts the server detached. Context window and serve flags are auto-tuned per model size and hardware.
 
 ---
 
@@ -191,7 +158,6 @@ Renders a table: name, size, context window, last modified. Default model marked
 
 ```bash
 oramalama pull hf://unsloth/gemma-4-31B-it-GGUF:Q4_K_M
-oramalama pull          # opens llmfit recommender if no model given
 ```
 
 ---
@@ -207,8 +173,7 @@ oramalama ps
 ### `stop [container]` — stop the server
 
 ```bash
-oramalama stop          # stops systemd quadlet or prompts to pick a container
-oramalama stop my-container
+oramalama stop          # stops systemd quadlet or ramalama container
 ```
 
 ---
@@ -220,32 +185,9 @@ oramalama show
 oramalama show hf://unsloth/gemma-4-31B-it-GGUF:Q4_K_M
 ```
 
-Displays architecture, quantization, size, context window. Shows endpoint if currently running.
+Displays architecture, quantization, size, context window, license, path. Shows endpoint if currently running.
 
 If `llmfit` is installed, also shows a hardware-fit panel: memory required, estimated tok/s, fit level (🟢 Perfect / 🟡 Tight / 🔴 Too large), score breakdown, and GGUF sources.
-
----
-
-### `discover` — scan network for ramalama servers
-
-```bash
-oramalama discover
-```
-
-Scans the local /24 subnet and all Tailscale peers for running ramalama-compatible API endpoints (ports 8080, 11434, 8081). Results are deduplicated by model fingerprint so the same server appearing on multiple IPs (LAN + Tailscale + WiFi) shows as one entry with a `(+N IP)` badge.
-
-After selecting a server you can:
-- **Connect** — sets `--remote` for the current session
-- **Switch model** (via SSH) — lists models on the remote machine and restarts the server with your selection
-
-If no local server is running and no `--remote` is set, oramalama will offer to run discovery automatically.
-
-**Slash commands added for remote sessions:**
-
-| Command | Effect |
-|---|---|
-| `/switch` | Switch the model on the current server (remote SSH or local restart) |
-| `/show` | Now also prints the SSH host when connected remotely |
 
 ---
 
@@ -253,7 +195,6 @@ If no local server is running and no `--remote` is set, oramalama will offer to 
 
 ```bash
 oramalama rm hf://unsloth/gemma-4-31B-it-GGUF:Q4_K_M
-oramalama rm            # interactive picker
 ```
 
 ---
@@ -268,26 +209,72 @@ Runs `llmfit` to recommend coding models that fit your GPU pool. Offers to pull 
 
 ---
 
+### `close [model]` — unload a model
+
+```bash
+oramalama close hf://unsloth/gemma-4-31B-it-GGUF:Q4_K_M
+```
+
+Sends a keep_alive=0 request to unload the model from GPU memory without stopping the server.
+
+---
+
+## API Server
+
+`oramalama serve` (the Go binary's built-in server, not to be confused with `oramalama launch` which starts ramalama) starts an HTTP API server on port **8090** that proxies requests to your ramalama backend. It provides:
+
+- **Ollama API**: `/api/generate`, `/api/chat`, `/api/tags`, etc.
+- **OpenAI API**: `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models`
+- **Anthropic API**: `/v1/messages`
+
+This is useful when you want a standalone API gateway without using the CLI subcommands.
+
+```bash
+oramalama serve
+# listening on 0.0.0.0:8090
+```
+
+---
+
+## Router Daemon
+
+`oramalama-router` is a separate binary for the always-on request dispatcher. It:
+
+1. Starts a small Qwen3-4B model via ramalama (if not running)
+2. Listens on port **8083** for OpenAI-compatible requests
+3. For each `/v1/chat/completions` request, calls the small model with a tool-use prompt to decide which large backend to use
+4. Starts the chosen backend on demand (cold start ~15–45 s)
+5. Proxies the request and response transparently
+6. Stops idle backends after a configurable timeout to reclaim VRAM
+
+```bash
+oramalama-router [--port 8083] [--idle-timeout 10m]
+```
+
+Configure OpenCode to use `http://127.0.0.1:8083` as its ramalama provider — the daemon handles all model-switching automatically.
+
+---
+
 ## Global flags
 
 | Flag | Effect |
 |---|---|
-| `--remote <url>` | Use a remote ramalama server (e.g. `http://myserver:8080`) |
 | `--model <name>` | Pre-select a model (skips interactive picker) |
 | `--dry-run` | Print actions without executing them |
+| `--version` | Print version and exit |
 
 ---
 
 ## Config file
 
-`~/.config/oramalama/config` (bash `key=value` syntax):
+`~/.config/oramalama/config`:
 
 ```bash
-# Use a remote ramalama server by default (e.g. on your home server)
-RAMALAMA_ENDPOINT=http://karnataka:8080
-
 # Override the default model
 DEFAULT_MODEL=hf://unsloth/gemma-4-31B-it-GGUF:Q4_K_M
+
+# Remote endpoint (use a remote ramalama server)
+RAMALAMA_ENDPOINT=http://karnataka:8080
 
 # Pre-select a coding tool for 'oramalama launch'
 DEFAULT_TOOL=opencode
@@ -310,13 +297,12 @@ On all **other hardware** (NVIDIA, standard AMD dGPU, CPU):
 
 ## Systemd quadlet (persistent server)
 
-For the default model, oramalama uses a systemd user service (`ramalama-opencode.service`) backed by the included quadlet file. This survives logout with `loginctl enable-linger`.
+For the default model, oramalama uses a systemd user service backed by the included quadlet file. This survives logout with `loginctl enable-linger`.
 
 ```bash
-# Install the quadlet
-cp ramalama-opencode.container ~/.config/containers/systemd/
+cp oramalama.container ~/.config/containers/systemd/
 systemctl --user daemon-reload
-systemctl --user start ramalama-opencode
+systemctl --user start oramalama
 
 # Enable at boot
 loginctl enable-linger "$USER"
@@ -340,14 +326,8 @@ oramalama launch --tool opencode "$@"
 # Quick chat with default model
 oramalama run
 
-# Chat showing Gemma 4's reasoning, plus timing stats
-oramalama run --think --verbose
-
-# Chat hiding the thinking content (clean output only)
-oramalama run --hidethinking
-
-# Open the llama.cpp built-in Web UI in a browser (always available)
-oramalama launch --tool webui
+# Chat with a specific model
+oramalama run hf://unsloth/gemma-4-31B-it-GGUF:Q4_K_M "write a haiku about Go"
 
 # Start opencode pointed at local model
 oramalama launch --tool opencode
@@ -355,36 +335,73 @@ oramalama launch --tool opencode
 # Start pi coding agent
 oramalama launch --tool pi
 
-# Start Open WebUI chat interface (requires podman/docker)
-oramalama launch --tool open-webui
-
-# Start AnythingLLM (requires podman/docker)
-oramalama launch --tool anythingllm
-
-# Start NextChat / Lobe Chat / big-AGI
-oramalama launch --tool nextchat
-oramalama launch --tool lobe-chat
-oramalama launch --tool big-agi
-
-# Terminal chat with aichat or tgpt
-oramalama launch --tool aichat
-oramalama launch --tool tgpt
+# Use the router daemon (small dispatcher model)
+oramalama launch --router
 
 # Use a remote ramalama server
-oramalama --remote http://karnataka:8080 launch --tool opencode
+oramalama launch --tool opencode --remote http://karnataka:8080
+
+# Use the API proxy server
+oramalama serve
+
+# Start the router daemon standalone
+oramalama-router
 
 # See what's running
 oramalama ps
 
-# Show metadata + llmfit hardware-fit panel for the default model
+# Show metadata + llmfit hardware-fit panel
 oramalama show
-
-# Press 'i' in any model picker to see llmfit hardware-fit info inline
-
-# Scan LAN + Tailscale for remote ramalama servers
-oramalama discover
 
 # Pull a model recommended for your GPU
 oramalama search
+
+# Unload a model from GPU memory
+oramalama close hf://unsloth/gemma-4-31B-it-GGUF:Q4_K_M
 ```
 
+---
+
+## Development
+
+Built with Go 1.26+. The project has two binaries:
+
+| Binary | Source | Purpose |
+|---|---|---|
+| `oramalama` | `cmd/oramalama-go/` | Main CLI — subcommands, tool launching, API server |
+| `oramalama-router` | `cmd/oramalama-router/` | Always-on request dispatcher daemon |
+
+```bash
+# Build both
+go build -o oramalama ./cmd/oramalama-go
+go build -o oramalama-router ./cmd/oramalama-router
+
+# Cross-compile
+GOOS=linux GOARCH=amd64 go build -o oramalama-linux-amd64 ./cmd/oramalama-go
+GOOS=darwin GOARCH=arm64 go build -o oramalama-darwin-arm64 ./cmd/oramalama-go
+```
+
+### Project structure
+
+```
+cmd/
+  oramalama-go/        # Main CLI entry point
+  oramalama-router/    # Router daemon
+internal/
+  cli/                 # CLI subcommand implementations
+  config/              # Config file loading and hardware detection
+  runtime/             # Ramalama server management
+  server/              # Ollama/OpenAI/Anthropic API proxy server
+  tui/                 # Interactive TUI components
+  api/                 # API types and client
+  client/              # HTTP client for ramalama backend
+  container/           # Container manager
+  model/               # Model manager
+  progress/            # Progress bars and spinners
+  readline/            # Readline library for REPL
+  gospike/             # Initial Go spike (replaced by cli/ package)
+legacy/
+  oramalama.bash       # Original bash implementation (archived)
+completions/           # Shell completion files
+docs/                  # Design docs
+```

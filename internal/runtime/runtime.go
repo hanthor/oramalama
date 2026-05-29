@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -19,7 +18,7 @@ import (
 )
 
 const (
-	containerName = "ramalama-opencode"
+	containerName = "oramalama"
 	localHost     = "127.0.0.1"
 	localPort     = "8080"
 	defaultModel  = config.DefaultModel
@@ -42,12 +41,6 @@ type InspectInfo struct {
 	Endianness int    `json:"Endianness"`
 	Metadata   int    `json:"Metadata"`
 	Tensors    int    `json:"Tensors"`
-}
-
-// Hardware holds hardware detection results for Strix Halo.
-type Hardware struct {
-	Image      string
-	RuntimeArg string
 }
 
 // InstalledModels returns the list of locally installed models.
@@ -191,7 +184,7 @@ func EnsureServer(ctx context.Context, model string, dryRun bool, stdout, stderr
 		return "", "", err
 	}
 
-	hw := DetectHardware()
+	hw := config.DetectGPU()
 	if selectedModel == defaultModel && UnitExists(ctx, quadletUnit) {
 		if err := runOrPrint(ctx, dryRun, "systemctl", []string{"--user", "start", quadletUnit}, stdout, stderr); err != nil {
 			return "", "", err
@@ -202,8 +195,8 @@ func EnsureServer(ctx context.Context, model string, dryRun bool, stdout, stderr
 			args = append(args, "--image", hw.Image)
 		}
 		args = append(args, "-c", strconv.Itoa(ctxSize))
-		if hw.RuntimeArg != "" {
-			args = append(args, "--runtime-args="+hw.RuntimeArg)
+		if hw.RuntimeArgs != "" {
+			args = append(args, "--runtime-args="+hw.RuntimeArgs)
 		}
 		args = append(args, selectedModel)
 		if err := runOrPrint(ctx, dryRun, "ramalama", args, stdout, stderr); err != nil {
@@ -291,113 +284,19 @@ func WaitForServer(ctx context.Context, endpoint string) error {
 	}
 }
 
-// DetectHardware detects AMD Strix Halo and returns appropriate config.
-func DetectHardware() Hardware {
-	hw := Hardware{RuntimeArg: "--jinja"}
-	entries, _ := filepath.Glob("/sys/class/drm/card*/device")
-	for _, entry := range entries {
-		vendor, err1 := os.ReadFile(filepath.Join(entry, "vendor"))
-		vram, err2 := os.ReadFile(filepath.Join(entry, "mem_info_vram_total"))
-		if err1 != nil || err2 != nil {
-			continue
-		}
-		vramGB := parseInt(strings.TrimSpace(string(vram))) / 1024 / 1024 / 1024
-		if strings.TrimSpace(string(vendor)) == "0x1002" && vramGB > 60 {
-			hw.Image = "docker.io/kyuz0/amd-strix-halo-toolboxes:vulkan-radv"
-			hw.RuntimeArg = "--jinja --parallel 1 --cache-ram 0"
-			return hw
-		}
-	}
-	return hw
+// DetectHardware calls config.DetectGPU for hardware-appropriate config.
+func DetectHardware() config.GPUInfo {
+	return config.DetectGPU()
 }
 
-// DetectVRAM returns total and free VRAM in GB for the primary GPU.
-// Tries AMD sysfs → nvidia-smi → Intel Xe lmem sysfs in order.
-// Returns (0, 0) if detection fails; callers should handle gracefully.
+// DetectVRAM returns (totalGB, freeGB) using the canonical hardware detector.
 func DetectVRAM() (totalGB, freeGB int) {
-	// ── AMD: amdgpu DRM sysfs (works for all AMD including Strix Halo APU) ──
-	entries, _ := filepath.Glob("/sys/class/drm/card*/device")
-	for _, entry := range entries {
-		total, err1 := os.ReadFile(filepath.Join(entry, "mem_info_vram_total"))
-		used, err2 := os.ReadFile(filepath.Join(entry, "mem_info_vram_used"))
-		if err1 != nil || err2 != nil {
-			continue
-		}
-		totalBytes := parseInt(strings.TrimSpace(string(total)))
-		usedBytes := parseInt(strings.TrimSpace(string(used)))
-		if totalBytes > 0 {
-			return totalBytes / 1024 / 1024 / 1024, (totalBytes - usedBytes) / 1024 / 1024 / 1024
-		}
-	}
-
-	// ── NVIDIA: nvidia-smi ───────────────────────────────────────────────────
-	if nv, err := exec.LookPath("nvidia-smi"); err == nil {
-		out, err := exec.Command(nv,
-			"--query-gpu=memory.total,memory.free",
-			"--format=csv,noheader,nounits",
-		).Output()
-		if err == nil {
-			// Output: "8192, 7500\n" (MiB per GPU; take first GPU)
-			line := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]
-			parts := strings.SplitN(line, ",", 2)
-			if len(parts) == 2 {
-				totalMiB := parseInt(strings.TrimSpace(parts[0]))
-				freeMiB := parseInt(strings.TrimSpace(parts[1]))
-				if totalMiB > 0 {
-					return totalMiB / 1024, freeMiB / 1024
-				}
-			}
-		}
-	}
-
-	// ── Intel Xe (discrete Arc): lmem sysfs ─────────────────────────────────
-	// The xe driver exposes local memory for discrete dGPUs only.
-	// iGPU users get (0,0) here and the caller falls back to system RAM.
-	for _, entry := range entries {
-		vendor, _ := os.ReadFile(filepath.Join(entry, "vendor"))
-		if strings.TrimSpace(string(vendor)) != "0x8086" {
-			continue
-		}
-		// xe driver path (kernel 6.2+)
-		lmemTotal, err1 := os.ReadFile(filepath.Join(entry, "lmem_total_bytes"))
-		lmemAvail, err2 := os.ReadFile(filepath.Join(entry, "lmem_avail_bytes"))
-		if err1 != nil || err2 != nil {
-			continue
-		}
-		totalBytes := parseInt(strings.TrimSpace(string(lmemTotal)))
-		availBytes := parseInt(strings.TrimSpace(string(lmemAvail)))
-		if totalBytes > 0 {
-			return totalBytes / 1024 / 1024 / 1024, availBytes / 1024 / 1024 / 1024
-		}
-	}
-
-	return 0, 0
+	return config.DetectVRAM()
 }
 
-// GetCtxSize returns the recommended context size for a model based on parameter count.
+// GetCtxSize delegates to config.GetCtxSize for the canonical implementation.
 func GetCtxSize(model string) int {
-	switch {
-	// rico03 reasoning-distilled models need room for CoT traces.
-	case strings.Contains(model, "27B-Claude-Opus-Reasoning") || strings.Contains(model, "Qwen3.6-27B-Claude-Opus-Reasoning"):
-		return 65536
-	case strings.Contains(model, "35B-Opus-Reasoning") || strings.Contains(model, "Qwen3.6-35B-Opus-Reasoning"):
-		return 65536
-	// Qwen 3.6 35B-A3B MoE — low active params, generous window.
-	case AnyContains(model, "35B-A3B", "35B_A3B", "35B/A3B"):
-		return 98304
-	case AnyContains(model, "A10B", "A14B", "A4B", "122B", "123B", "110B"):
-		return 16384
-	case AnyContains(model, "70B", "72B", "65B", "31B", "32B", "34B", "30B", "27B"):
-		return 32768
-	case AnyContains(model, "12B", "13B", "14B"):
-		return 65536
-	case AnyContains(model, "7B", "8B", "E4B", "4B"):
-		return 131072
-	case AnyContains(model, "E2B", "1B", "2B", "3B"):
-		return 262144
-	default:
-		return 32768
-	}
+	return config.GetCtxSize(model)
 }
 
 // FindModel finds a model by name or normalized match.

@@ -18,11 +18,11 @@ import (
 )
 
 const (
-	containerName = "ramalama-opencode"
+	containerName = "oramalama"
 	localHost     = "127.0.0.1"
 	localPort     = "8080"
 	defaultModel  = "hf://batiai/Qwen3.6-35B-A3B-GGUF:Q6_K"
-	quadletUnit   = "ramalama-opencode.service"
+	quadletUnit   = "oramalama.service"
 )
 
 type App struct {

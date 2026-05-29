@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -14,26 +13,13 @@ import (
 	"github.com/hanthor/oramalama/internal/tui"
 )
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Router daemon constants (mirrors oramalama bash script)
-// ──────────────────────────────────────────────────────────────────────────────
-
-const (
-	routerPort      = 8083
-	routerModel     = "hf://Qwen/Qwen3-4B-GGUF:Q4_K_M"
-	routerContainer = "ramalama-router"
-	routerService   = "ramalama-router.service"
-)
-
 type launchCmd struct{ r *Runner }
 
 func (c *launchCmd) Name() string      { return "launch" }
 func (c *launchCmd) Aliases() []string { return nil }
 
 func (c *launchCmd) Run(ctx context.Context, args []string) error {
-	// Parse flags: --tool, --prompt, --router
 	var toolName, prompt string
-	useRouter := false
 
 	remaining := args[:0]
 	for i := 0; i < len(args); i++ {
@@ -48,8 +34,6 @@ func (c *launchCmd) Run(ctx context.Context, args []string) error {
 				prompt = args[i+1]
 				i++
 			}
-		case "--router":
-			useRouter = true
 		case "--suggest":
 			return runSearch(ctx, c.r)
 		default:
@@ -62,7 +46,7 @@ func (c *launchCmd) Run(ctx context.Context, args []string) error {
 	selectedTool := toolName
 	if selectedTool == "" {
 		var err error
-		selectedTool, useRouter, err = c.pickTool(ctx, useRouter)
+		selectedTool, err = c.pickTool(ctx)
 		if err != nil {
 			if errors.Is(err, tui.ErrCancelled) {
 				return nil
@@ -75,40 +59,25 @@ func (c *launchCmd) Run(ctx context.Context, args []string) error {
 		return runSearch(ctx, c.r)
 	}
 
-	// ── Start inference (or router daemon) ────────────────────────────────────
-	var endpoint, servedModel string
-
-	if useRouter {
-		ep, err := c.ensureRouter(ctx)
+	// ── Start inference ──────────────────────────────────────────────────────
+	model := c.r.CLIModel
+	if model == "" && c.r.DryRun {
+		model = config.DefaultModel
+	}
+	if model == "" {
+		m, err := c.pickModel(ctx)
 		if err != nil {
-			return err
-		}
-		endpoint = ep
-		servedModel = "oramalama-router"
-	} else {
-		// Pick a model interactively if not given via --model.
-		model := c.r.CLIModel
-		if model == "" && c.r.DryRun {
-			// In dry-run mode with no model specified, use the configured default.
-			model = config.DefaultModel
-		}
-		if model == "" {
-			m, err := c.pickModel(ctx)
-			if err != nil {
-				if errors.Is(err, tui.ErrCancelled) {
-					return nil
-				}
-				return err
+			if errors.Is(err, tui.ErrCancelled) {
+				return nil
 			}
-			model = m
-		}
-
-		ep, sm, err := runtime.EnsureServer(ctx, model, c.r.DryRun, c.r.Stdout, c.r.Stderr)
-		if err != nil {
 			return err
 		}
-		endpoint = ep
-		servedModel = sm
+		model = m
+	}
+
+	endpoint, servedModel, err := runtime.EnsureServer(ctx, model, c.r.DryRun, c.r.Stdout, c.r.Stderr)
+	if err != nil {
+		return err
 	}
 
 	// ── Ensure tools are installed ───────────────────────────────────────────
@@ -119,7 +88,7 @@ func (c *launchCmd) Run(ctx context.Context, args []string) error {
 	// ── Launch the selected tool ──────────────────────────────────────────────
 	switch strings.ToLower(selectedTool) {
 	case "opencode":
-		return c.launchOpenCode(ctx, endpoint, servedModel, useRouter, extraArgs)
+		return c.launchOpenCode(ctx, endpoint, servedModel, extraArgs)
 	case "pi", "pi-coding-agent":
 		return c.launchPi(ctx, endpoint, servedModel, extraArgs)
 	case "goose", "goose-cli":
@@ -139,9 +108,7 @@ func (c *launchCmd) Run(ctx context.Context, args []string) error {
 // ──────────────────────────────────────────────────────────────────────────────
 
 // pickTool shows the two-level category → tool menu.
-// Returns (toolName, useRouter, error).
-func (c *launchCmd) pickTool(ctx context.Context, useRouter bool) (string, bool, error) {
-	// Category menu
+func (c *launchCmd) pickTool(ctx context.Context) (string, error) {
 	cats := []tui.SelectItem{
 		{Name: "Coding Tools", Description: "OpenCode, Goose, VS Code"},
 		{Name: "Start Server Only", Description: "start inference, no editor"},
@@ -150,47 +117,32 @@ func (c *launchCmd) pickTool(ctx context.Context, useRouter bool) (string, bool,
 
 	category, err := tui.SelectSingle("What would you like to launch?", cats, "")
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
 
 	switch category {
 	case "Coding Tools":
-		return c.pickCodingTool(ctx, useRouter)
-
+		return c.pickCodingTool(ctx)
 	case "Start Server Only":
-		return "server", false, nil
-
+		return "server", nil
 	case "Search Models":
-		return "search", false, nil
+		return "search", nil
 	}
 
-	return "", false, tui.ErrCancelled
+	return "", tui.ErrCancelled
 }
 
 // pickCodingTool shows the tool sub-menu under "Coding Tools".
-func (c *launchCmd) pickCodingTool(ctx context.Context, useRouterDefault bool) (string, bool, error) {
-	// Check which tools are available
+func (c *launchCmd) pickCodingTool(ctx context.Context) (string, error) {
 	_, hasOpenCode := exec.LookPath("opencode")
 	_, hasPi := exec.LookPath("pi")
 	_, hasGoose := exec.LookPath("goose")
 	_, hasCode := exec.LookPath("code")
 
-	// Check router status for display
-	routerStatus := "off"
-	if isRouterRunning() {
-		routerStatus = "running"
-	}
-
 	var tools []tui.SelectItem
 
 	if hasOpenCode == nil {
-		tools = append(tools,
-			tui.SelectItem{Name: "OpenCode", Description: "direct to inference model"},
-			tui.SelectItem{
-				Name:        "OpenCode [router daemon]",
-				Description: fmt.Sprintf("always-on Qwen3-4B dispatcher — %s", routerStatus),
-			},
-		)
+		tools = append(tools, tui.SelectItem{Name: "OpenCode", Description: "AI coding assistant with ramalama backend"})
 	}
 	if hasPi == nil {
 		tools = append(tools, tui.SelectItem{Name: "Pi", Description: "AI coding agent with read/edit/bash tools"})
@@ -203,19 +155,15 @@ func (c *launchCmd) pickCodingTool(ctx context.Context, useRouterDefault bool) (
 	}
 
 	if len(tools) == 0 {
-		return "", false, errors.New("no coding tools found — install opencode, goose, or code")
+		return "", errors.New("no coding tools found — install opencode, goose, or code")
 	}
 
 	selected, err := tui.SelectSingle("Select a coding tool", tools, "")
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
 
-	if selected == "OpenCode [router daemon]" {
-		return "opencode", true, nil
-	}
-	_ = useRouterDefault
-	return strings.ToLower(strings.SplitN(selected, " ", 2)[0]), false, nil
+	return strings.ToLower(strings.SplitN(selected, " ", 2)[0]), nil
 }
 
 // pickModel shows the interactive model picker, optionally annotating with
@@ -226,11 +174,14 @@ func (c *launchCmd) pickModel(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if len(models) == 0 {
-		return "", errors.New("no models installed — run: oramalama-go pull <model>")
+		return "", errors.New("no models installed — run: oramalama pull <model>")
 	}
 
-	// Query llmfit recommendations (non-fatal if unavailable or slow).
 	totalVRAM, _ := runtime.DetectVRAM()
+	if totalVRAM == 0 {
+		totalVRAM = detectSystemRAM(ctx)
+	}
+
 	var recommended map[string]bool
 	if totalVRAM > 0 {
 		recs, _ := runtime.LlmfitRecommend(ctx, totalVRAM)
@@ -278,17 +229,10 @@ func (c *launchCmd) pickModel(ctx context.Context) (string, error) {
 // Tool launchers
 // ──────────────────────────────────────────────────────────────────────────────
 
-func (c *launchCmd) launchOpenCode(ctx context.Context, endpoint, servedModel string, useRouter bool, extra []string) error {
-	var modelID, displayName string
+func (c *launchCmd) launchOpenCode(ctx context.Context, endpoint, servedModel string, extra []string) error {
+	modelID := servedModel
+	displayName := runtime.ModelDisplayName(servedModel) + " (RamaLama)"
 	ctxSize := runtime.GetCtxSize(servedModel)
-
-	if useRouter {
-		modelID = "oramalama-router"
-		displayName = "oramalama router (Qwen3-4B dispatcher)"
-	} else {
-		modelID = servedModel
-		displayName = runtime.ModelDisplayName(servedModel) + " (RamaLama)"
-	}
 
 	if c.r.DryRun {
 		fmt.Fprintf(c.r.Stdout, "[dry-run] configure opencode → %s/v1 model=%s\n", endpoint, modelID)
@@ -381,13 +325,36 @@ func (c *launchCmd) launchVSCode(endpoint string) error {
 // Tool installation helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
+// detectSystemRAM tries to read total system RAM in GB from /proc/meminfo.
+func detectSystemRAM(ctx context.Context) int {
+	if cmd, err := exec.LookPath("free"); err == nil {
+		out, err := exec.CommandContext(ctx, cmd, "-g").Output()
+		if err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				if strings.HasPrefix(line, "Mem:") {
+					fields := strings.Fields(line)
+					if len(fields) >= 2 {
+						var gb int
+						fmt.Sscanf(fields[1], "%d", &gb)
+						if gb > 0 {
+							return gb
+						}
+					}
+					break
+				}
+			}
+		}
+	}
+	return 0
+}
+
 func (c *launchCmd) ensureToolInstalled(ctx context.Context, tool string) error {
 	tool = strings.ToLower(tool)
 
 	switch tool {
 	case "opencode":
 		if _, err := exec.LookPath("opencode"); err == nil {
-			return nil // Already installed
+			return nil
 		}
 		if _, err := exec.LookPath("npm"); err != nil {
 			return errors.New("opencode not found and npm is required to install it")
@@ -404,7 +371,7 @@ func (c *launchCmd) ensureToolInstalled(ctx context.Context, tool string) error 
 
 	case "pi", "pi-coding-agent":
 		if _, err := exec.LookPath("pi"); err == nil {
-			return nil // Already installed
+			return nil
 		}
 		if _, err := exec.LookPath("npm"); err != nil {
 			return errors.New("pi not found and npm is required to install it")
@@ -421,80 +388,11 @@ func (c *launchCmd) ensureToolInstalled(ctx context.Context, tool string) error 
 
 	case "goose", "goose-cli":
 		if _, err := exec.LookPath("goose"); err == nil {
-			return nil // Already installed
+			return nil
 		}
 		return errors.New("goose not found — install with: brew install block-goose-cli")
 
 	default:
-		return nil // No installation needed for other tools
+		return nil
 	}
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Router daemon helpers
-// ──────────────────────────────────────────────────────────────────────────────
-
-func isRouterRunning() bool {
-	client := &http.Client{}
-	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/health", routerPort))
-	if err != nil {
-		return false
-	}
-	resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
-}
-
-func (c *launchCmd) ensureRouter(ctx context.Context) (string, error) {
-	ep := fmt.Sprintf("http://127.0.0.1:%d", routerPort)
-
-	if isRouterRunning() {
-		fmt.Fprintf(c.r.Stdout, "router daemon already running on port %d\n", routerPort)
-		return ep, nil
-	}
-
-	fmt.Fprintf(c.r.Stdout, "starting router daemon (Qwen3-4B on port %d)...\n", routerPort)
-
-	// Prefer the systemd quadlet.
-	checkUnit := exec.CommandContext(ctx, "systemctl", "--user", "list-unit-files", "--quiet", routerService)
-	if checkUnit.Run() == nil {
-		cmd := exec.CommandContext(ctx, "systemctl", "--user", "start", routerService)
-		cmd.Stdout = c.r.Stdout
-		cmd.Stderr = c.r.Stderr
-		if err := cmd.Run(); err != nil {
-			return "", fmt.Errorf("start router service: %w", err)
-		}
-	} else {
-		// Ad-hoc ramalama serve.
-		hw := runtime.DetectHardware()
-		args := []string{
-			"serve", "--detach", "--name", routerContainer,
-			"-p", fmt.Sprintf("%d", routerPort),
-			"-c", "32768",
-		}
-		if hw.Image != "" {
-			args = append(args, "--image", hw.Image)
-		}
-		if hw.RuntimeArg != "" {
-			args = append(args, "--runtime-args="+hw.RuntimeArg)
-		}
-		args = append(args, routerModel)
-
-		if c.r.DryRun {
-			fmt.Fprintf(c.r.Stdout, "[dry-run] ramalama %s\n", strings.Join(args, " "))
-			return ep, nil
-		}
-
-		cmd := exec.CommandContext(ctx, "ramalama", args...)
-		cmd.Stdout = c.r.Stdout
-		cmd.Stderr = c.r.Stderr
-		if err := cmd.Run(); err != nil {
-			return "", fmt.Errorf("start router model: %w", err)
-		}
-	}
-
-	if err := runtime.WaitForServer(ctx, ep); err != nil {
-		return "", fmt.Errorf("router daemon did not start: %w", err)
-	}
-	fmt.Fprintf(c.r.Stdout, "router daemon ready on %s\n", ep)
-	return ep, nil
 }

@@ -1,0 +1,56 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  GO_VERSION: "1.26"
+  # Public bartowski repo — ungated, reliable, 380MB download.
+  HF_REPO: "bartowski/Qwen2.5-0.5B-Instruct-GGUF"
+  HF_FILE: "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Install ramalama
+        run: |
+          pip install ramalama huggingface_hub
+          ramalama --version
+
+      - name: Download test model
+        run: |
+          python3 -c "
+          from huggingface_hub import hf_hub_download
+          path = hf_hub_download(
+              repo_id='${{ env.HF_REPO }}',
+              filename='${{ env.HF_FILE }}',
+              local_dir='/tmp/test-model'
+          )
+          print(f'Model downloaded: {path}')
+          "
+
+      - name: Pull model into ramalama
+        run: |
+          ramalama pull "file:///tmp/test-model/${{ env.HF_FILE }}"
+          ramalama list
+
+      - name: Run unit tests
+        run: go test -v -count=1 ./internal/config/ ./internal/runtime/ ./internal/api/ ./internal/cli/ ./internal/model/ ./internal/progress/ ./internal/tui/
+
+      - name: Run integration tests
+        run: go test -tags=integration -v -count=1 -timeout 10m ./internal/runtime/

@@ -82,12 +82,11 @@ func (d *Dispatcher) Dispatch(ctx context.Context, cmd string, args []string) er
 }
 
 func (d *Dispatcher) usage() error {
-	fmt.Fprintln(d.runner.Stderr, `usage: oramalama-go [--model <name>] [--dry-run] [subcommand]
+	fmt.Fprintln(d.runner.Stderr, `usage: oramalama [--model <name>] [--dry-run] [subcommand]
 
 subcommands:
   launch    start server + launch a tool (default; shows TUI menu if no --tool)
               --tool opencode|goose|vscode|server
-              --router    use always-on router daemon (Qwen3-4B dispatcher)
   run       interactive chat REPL
   serve     start the inference server (detached)
   list      list downloaded models

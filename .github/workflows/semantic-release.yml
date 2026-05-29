@@ -22,11 +22,6 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: "1.23"
-
       - name: Install semantic-release
         run: npm install -g semantic-release @semantic-release/changelog @semantic-release/git @semantic-release/github @semantic-release/exec
 
@@ -34,3 +29,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx semantic-release
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build binary (for local smoke test)
+        run: |
+          go build -o /tmp/oramalama ./cmd/oramalama-go
+          /tmp/oramalama --version

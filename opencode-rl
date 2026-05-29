@@ -1,3 +1,9 @@
 #!/bin/bash
 # opencode-rl: shortcut for "oramalama launch --tool opencode"
-exec "$(dirname "$0")/oramalama" launch --tool opencode "$@"
+# Calls the Go binary (or legacy bash) named "oramalama" from the same directory or PATH.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -x "${SCRIPT_DIR}/oramalama" ]; then
+    exec "${SCRIPT_DIR}/oramalama" launch --tool opencode "$@"
+else
+    exec oramalama launch --tool opencode "$@"
+fi

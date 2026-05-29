@@ -21,7 +21,7 @@ func main() {
 	args := os.Args[1:]
 	cfg := config.Load()
 
-	// Fast path: `oramalama-go serve` starts the HTTP API server (not ramalama).
+	// Fast path: `oramalama serve` starts the HTTP API server (not ramalama).
 	if len(args) > 0 && args[0] == "serve" {
 		srv := server.New(cfg)
 		if err := srv.Start("0.0.0.0:" + config.ServerPort); err != nil {

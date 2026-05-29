@@ -270,7 +270,7 @@ func (s *Server) streamGenerate(c *gin.Context, req api.GenerateRequest) {
 	case <-ctx.Done():
 		return
 	case <-done:
-		fmt.Fprintln(c.Writer, "data: [DONE]\n\n")
+		fmt.Fprint(c.Writer, "data: [DONE]\n\n")
 		c.Writer.Flush()
 	}
 }
@@ -351,7 +351,7 @@ func (s *Server) streamChat(c *gin.Context, req api.ChatRequest) {
 	case <-ctx.Done():
 		return
 	case <-done:
-		fmt.Fprintln(c.Writer, "data: [DONE]\n\n")
+		fmt.Fprint(c.Writer, "data: [DONE]\n\n")
 		c.Writer.Flush()
 	}
 }
@@ -493,7 +493,7 @@ func (s *Server) streamPull(c *gin.Context, req api.PullRequest) {
 	case <-ctx.Done():
 		return
 	case <-done:
-		fmt.Fprintln(c.Writer, "data: [DONE]\n\n")
+		fmt.Fprint(c.Writer, "data: [DONE]\n\n")
 		c.Writer.Flush()
 	}
 }
@@ -545,7 +545,7 @@ func (s *Server) streamPush(c *gin.Context, req api.PushRequest) {
 	case <-ctx.Done():
 		return
 	case <-done:
-		fmt.Fprintln(c.Writer, "data: [DONE]\n\n")
+		fmt.Fprint(c.Writer, "data: [DONE]\n\n")
 		c.Writer.Flush()
 	}
 }
@@ -601,7 +601,7 @@ func (s *Server) streamOpenAIChat(c *gin.Context, req api.ChatCompletionRequest)
 	case <-ctx.Done():
 		return
 	case <-done:
-		fmt.Fprintln(c.Writer, "data: [DONE]\n\n")
+		fmt.Fprint(c.Writer, "data: [DONE]\n\n")
 		c.Writer.Flush()
 	}
 }
@@ -733,7 +733,7 @@ func (s *Server) streamOpenAICompletion(c *gin.Context, req api.CompletionReques
 	case <-ctx.Done():
 		return
 	case <-done:
-		fmt.Fprintln(c.Writer, "data: [DONE]\n\n")
+		fmt.Fprint(c.Writer, "data: [DONE]\n\n")
 		c.Writer.Flush()
 	}
 }
@@ -1043,7 +1043,7 @@ func (s *Server) streamAnthropicChat(c *gin.Context, req api.ChatCompletionReque
 	case <-ctx.Done():
 		return
 	case <-done:
-		fmt.Fprintln(c.Writer, "data: [DONE]\n\n")
+		fmt.Fprint(c.Writer, "data: [DONE]\n\n")
 		c.Writer.Flush()
 	}
 }

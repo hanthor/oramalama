@@ -82,7 +82,7 @@ func (m *Manager) UnitExists(ctx context.Context, unit string) bool {
 	return cmd.Run() == nil
 }
 
-func (m *Manager) StartServe(ctx context.Context, model string, ctxSize int, hw config.Hardware) error {
+func (m *Manager) StartServe(ctx context.Context, model string, ctxSize int, hw config.GPUInfo) error {
 	if m.cfg.CLIModel == config.DefaultModel && m.UnitExists(ctx, config.QuadletService) {
 		return m.startQuadlet(ctx)
 	}
@@ -92,8 +92,8 @@ func (m *Manager) StartServe(ctx context.Context, model string, ctxSize int, hw 
 		args = append(args, "--image", hw.Image)
 	}
 	args = append(args, "-c", fmt.Sprintf("%d", ctxSize))
-	if hw.RuntimeArg != "" {
-		args = append(args, "--runtime-args="+hw.RuntimeArg)
+	if hw.RuntimeArgs != "" {
+		args = append(args, "--runtime-args="+hw.RuntimeArgs)
 	}
 	args = append(args, model)
 

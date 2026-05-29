@@ -1,0 +1,13 @@
+# Go binaries
+oramalama
+oramalama-router
+oramalama.exe
+oramalama-router.exe
+
+# GoReleaser output
+/dist/
+
+# OS files
+.DS_Store
+Thumbs.db
+oramalama-go

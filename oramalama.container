@@ -30,7 +30,7 @@ DropCapability=all
 NoNewPrivileges=true
 Mount=type=bind,src=/var/home/james/.local/share/ramalama/store/huggingface/unsloth/gemma-4-31B-it-GGUF/blobs/sha256-2dfbfc7d538912f4ea11d29d85b4e25d7bc26386e53f57529f1d707c28b5828c,target=/mnt/models/chat_template_extracted,ro,Z
 Mount=type=bind,src=/var/home/james/.local/share/ramalama/store/huggingface/unsloth/gemma-4-31B-it-GGUF/blobs/sha256-30ac8fa6b6fe8e23f73b2202b401ba352949674fe3a2d50c5c55bc88be76c809,target=/mnt/models/gemma-4-31B-it-Q4_K_M.gguf,ro,Z
-ContainerName=ramalama-opencode
+ContainerName=oramalama
 PublishPort=0.0.0.0:8080:8080
 
 [Service]

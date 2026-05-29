@@ -46,11 +46,9 @@ brews:
     license: "Apache-2.0"
     skip_upload: false
     test: |
-      system "#{bin}/oramalama --help"
+      system "#{bin}/oramalama --version"
     dependencies:
       - name: ramalama
-      - name: gum
-      - name: jq
 
 checksum:
   name_template: checksums.txt
@@ -82,8 +80,6 @@ release:
 
     ## Dependencies
     - ramalama
-    - gum
-    - jq
 
 announce:
   skip: false
