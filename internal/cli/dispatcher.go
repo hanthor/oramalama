@@ -13,6 +13,65 @@ import (
 	"strings"
 )
 
+// runnerExec executes a command and returns an error. Injectable for tests.
+var runnerExec = func(ctx context.Context, name string, args ...string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	return cmd.Run()
+}
+
+// runnerCapture executes a command and returns trimmed stdout. Injectable for tests.
+var runnerCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		if stderr.Len() > 0 {
+			return "", errors.New(strings.TrimSpace(stderr.String()))
+		}
+		return "", err
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+// runnerPostJSON does an HTTP POST and returns the response body. Injectable.
+var runnerPostJSON = func(ctx context.Context, endpoint, path string, reqBody interface{}) ([]byte, error) {
+	var body io.Reader
+	if reqBody != nil {
+		bts, err := json.Marshal(reqBody)
+		if err != nil {
+			return nil, err
+		}
+		body = bytes.NewReader(bts)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+path, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer sk-no-key-required")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	payload, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status from %s: %d: %s", path, resp.StatusCode, strings.TrimSpace(string(payload)))
+	}
+	return payload, nil
+}
+
 // Command defines the interface for all CLI subcommands.
 type Command interface {
 	Name() string
@@ -101,59 +160,15 @@ subcommands:
 
 // execCmd runs a subprocess with stdin/stdout/stderr wired to the runner.
 func (d *Runner) execCmd(ctx context.Context, name string, args ...string) error {
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Stdout = d.Stdout
-	cmd.Stderr = d.Stderr
-	cmd.Stdin = os.Stdin
-	return cmd.Run()
+	return runnerExec(ctx, name, args...)
 }
 
 // capture runs a subprocess and returns stdout.
 func (d *Runner) capture(ctx context.Context, name string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	if err != nil {
-		if stderr.Len() > 0 {
-			return "", errors.New(strings.TrimSpace(stderr.String()))
-		}
-		return "", err
-	}
-	return strings.TrimSpace(stdout.String()), nil
+	return runnerCapture(ctx, name, args...)
 }
 
 // postJSON does a POST to an endpoint and returns the response body.
 func (d *Runner) postJSON(ctx context.Context, endpoint, path string, reqBody interface{}) ([]byte, error) {
-	var body io.Reader
-	if reqBody != nil {
-		bts, err := json.Marshal(reqBody)
-		if err != nil {
-			return nil, err
-		}
-		body = bytes.NewReader(bts)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint+path, body)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer sk-no-key-required")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	payload, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status from %s: %d: %s", path, resp.StatusCode, strings.TrimSpace(string(payload)))
-	}
-	return payload, nil
+	return runnerPostJSON(ctx, endpoint, path, reqBody)
 }

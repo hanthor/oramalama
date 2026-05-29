@@ -19,8 +19,8 @@ import (
 
 // ── Injectable I/O (overridable in tests) ─────────────────────────────────────
 
-// execCapture runs a command and returns its trimmed stdout. Tests can override.
-var execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+// ExecCapture runs a command and returns its trimmed stdout. Tests can override.
+var ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -34,8 +34,8 @@ var execCapture = func(ctx context.Context, name string, args ...string) (string
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-// execRun runs a command, wiring stdin/stdout/stderr. Tests can override.
-var execRun = func(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
+// ExecRun runs a command, wiring stdin/stdout/stderr. Tests can override.
+var ExecRun = func(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
@@ -43,8 +43,8 @@ var execRun = func(ctx context.Context, name string, args []string, stdout, stde
 	return cmd.Run()
 }
 
-// httpDo performs an HTTP request. Tests can override.
-var httpDo = func(req *http.Request) (*http.Response, error) {
+// HTTPDo performs an HTTP request. Tests can override.
+var HTTPDo = func(req *http.Request) (*http.Response, error) {
 	return http.DefaultClient.Do(req)
 }
 
@@ -76,7 +76,7 @@ type InspectInfo struct {
 
 // InstalledModels returns the list of locally installed models.
 func InstalledModels(ctx context.Context) ([]ModelInfo, error) {
-	out, err := execCapture(ctx, "ramalama", "list", "--json")
+	out, err := ExecCapture(ctx, "ramalama", "list", "--json")
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +89,7 @@ func InstalledModels(ctx context.Context) ([]ModelInfo, error) {
 
 // InspectModel returns detailed info about a model.
 func InspectModel(ctx context.Context, model string) (InspectInfo, error) {
-	out, err := execCapture(ctx, "ramalama", "inspect", "--json", model)
+	out, err := ExecCapture(ctx, "ramalama", "inspect", "--json", model)
 	if err != nil {
 		return InspectInfo{}, err
 	}
@@ -102,7 +102,7 @@ func InspectModel(ctx context.Context, model string) (InspectInfo, error) {
 
 // InspectField returns a single field from model inspection.
 func InspectField(ctx context.Context, model, key string) string {
-	out, err := execCapture(ctx, "ramalama", "inspect", "--get", key, model)
+	out, err := ExecCapture(ctx, "ramalama", "inspect", "--get", key, model)
 	if err != nil {
 		return ""
 	}
@@ -111,11 +111,11 @@ func InspectField(ctx context.Context, model, key string) string {
 
 // Endpoint returns the running server endpoint URL.
 func Endpoint(ctx context.Context) string {
-	out, err := execCapture(ctx, "podman", "inspect", "--format={{.State.Status}}", containerName)
+	out, err := ExecCapture(ctx, "podman", "inspect", "--format={{.State.Status}}", containerName)
 	if err != nil || out != "running" {
 		return "http://" + localHost + ":" + localPort
 	}
-	portOut, err := execCapture(ctx, "podman", "port", containerName)
+	portOut, err := ExecCapture(ctx, "podman", "port", containerName)
 	if err != nil {
 		return "http://" + localHost + ":" + localPort
 	}
@@ -140,7 +140,7 @@ func ModelIDFromEndpoint(ctx context.Context, endpoint string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resp, err := httpDo(req)
+	resp, err := HTTPDo(req)
 	if err != nil {
 		return "", err
 	}
@@ -170,7 +170,7 @@ func EnsureServer(ctx context.Context, model string, dryRun bool, stdout, stderr
 
 	// 1. Check if the service is in a failed state and attempt to recover it
 	if UnitExists(ctx, quadletUnit) {
-		status, _ := execCapture(ctx, "systemctl", "--user", "is-active", quadletUnit)
+		status, _ := ExecCapture(ctx, "systemctl", "--user", "is-active", quadletUnit)
 		if status == "failed" {
 			fmt.Fprintf(stdout, "service %s is in failed state, attempting to re-sync...\n", quadletUnit)
 			if err := runOrPrint(ctx, dryRun, "ramalama", []string{"serve", "--detach", "--name", containerName}, stdout, stderr); err != nil {
@@ -257,7 +257,7 @@ func stopCompetingLocalModels(ctx context.Context, selectedModel string, dryRun 
 		keepUnit = quadletUnit
 	}
 
-	out, _ := execCapture(ctx, "systemctl", "--user", "list-units", "--type=service", "--state=active", "--plain", "ramalama-*", "--no-legend")
+	out, _ := ExecCapture(ctx, "systemctl", "--user", "list-units", "--type=service", "--state=active", "--plain", "ramalama-*", "--no-legend")
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -275,7 +275,7 @@ func stopCompetingLocalModels(ctx context.Context, selectedModel string, dryRun 
 		}
 	}
 
-	out, _ = execCapture(ctx, "ramalama", "ps", "--noheading")
+	out, _ = ExecCapture(ctx, "ramalama", "ps", "--noheading")
 	if strings.Contains(out, containerName) {
 		if err := runOrPrint(ctx, dryRun, "ramalama", []string{"stop", containerName}, stdout, stderr); err != nil {
 			return err
@@ -297,7 +297,7 @@ func WaitForServer(ctx context.Context, endpoint string) error {
 	for {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err == nil {
-			resp, err := httpDo(req)
+			resp, err := HTTPDo(req)
 			if err == nil {
 				resp.Body.Close()
 				if resp.StatusCode == http.StatusOK {
@@ -446,7 +446,7 @@ func runOrPrint(ctx context.Context, dryRun bool, name string, args []string, st
 		fmt.Fprintf(stdout, "[dry-run] %s %s\n", name, strings.Join(quoteArgs(args), " "))
 		return nil
 	}
-	return execRun(ctx, name, args, stdout, stderr)
+	return ExecRun(ctx, name, args, stdout, stderr)
 }
 
 func intPtr(i int) *int { return &i }

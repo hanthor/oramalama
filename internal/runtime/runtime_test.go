@@ -568,10 +568,10 @@ func TestConfigurePi_MergesExisting(t *testing.T) {
 // ── Mock-backed I/O tests ─────────────────────────────────────────────────────
 
 func TestInstalledModels_Mock(t *testing.T) {
-	old := execCapture
-	defer func() { execCapture = old }()
+	old := ExecCapture
+	defer func() { ExecCapture = old }()
 
-	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
 		return `[{"name":"a-model","size":100},{"name":"b-model","size":200}]`, nil
 	}
 
@@ -588,10 +588,10 @@ func TestInstalledModels_Mock(t *testing.T) {
 }
 
 func TestInstalledModels_Error(t *testing.T) {
-	old := execCapture
-	defer func() { execCapture = old }()
+	old := ExecCapture
+	defer func() { ExecCapture = old }()
 
-	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
 		return "", errors.New("ramalama not found")
 	}
 	_, err := InstalledModels(context.Background())
@@ -601,10 +601,10 @@ func TestInstalledModels_Error(t *testing.T) {
 }
 
 func TestInspectModel_Mock(t *testing.T) {
-	old := execCapture
-	defer func() { execCapture = old }()
+	old := ExecCapture
+	defer func() { ExecCapture = old }()
 
-	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
 		return `{"Name":"model","Format":"GGUF","Version":3}`, nil
 	}
 
@@ -618,10 +618,10 @@ func TestInspectModel_Mock(t *testing.T) {
 }
 
 func TestInspectField_Mock(t *testing.T) {
-	old := execCapture
-	defer func() { execCapture = old }()
+	old := ExecCapture
+	defer func() { ExecCapture = old }()
 
-	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
 		return "amd\n", nil
 	}
 	got := InspectField(context.Background(), "model", "general.architecture")
@@ -631,10 +631,10 @@ func TestInspectField_Mock(t *testing.T) {
 }
 
 func TestEndpoint_Default(t *testing.T) {
-	old := execCapture
-	defer func() { execCapture = old }()
+	old := ExecCapture
+	defer func() { ExecCapture = old }()
 
-	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
 		return "", errors.New("no container")
 	}
 	ep := Endpoint(context.Background())
@@ -644,10 +644,10 @@ func TestEndpoint_Default(t *testing.T) {
 }
 
 func TestModelIDFromEndpoint_Mock(t *testing.T) {
-	old := httpDo
-	defer func() { httpDo = old }()
+	old := HTTPDo
+	defer func() { HTTPDo = old }()
 
-	httpDo = func(req *http.Request) (*http.Response, error) {
+	HTTPDo = func(req *http.Request) (*http.Response, error) {
 		body := io.NopCloser(strings.NewReader(`{"data":[{"id":"served-model"}]}`))
 		return &http.Response{StatusCode: 200, Body: body}, nil
 	}
@@ -669,10 +669,10 @@ func TestEnsureServer_ModelRequired(t *testing.T) {
 }
 
 func TestEnsureServer_ModelNotFound(t *testing.T) {
-	oldCapture := execCapture
-	defer func() { execCapture = oldCapture }()
+	oldCapture := ExecCapture
+	defer func() { ExecCapture = oldCapture }()
 
-	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
 		return `[]`, nil
 	}
 
@@ -684,14 +684,14 @@ func TestEnsureServer_ModelNotFound(t *testing.T) {
 }
 
 func TestResolveShowModel_FromServer(t *testing.T) {
-	oldCap := execCapture
-	oldHTTP := httpDo
-	defer func() { execCapture = oldCap; httpDo = oldHTTP }()
+	oldCap := ExecCapture
+	oldHTTP := HTTPDo
+	defer func() { ExecCapture = oldCap; HTTPDo = oldHTTP }()
 
-	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
 		return "", errors.New("no podman")
 	}
-	httpDo = func(req *http.Request) (*http.Response, error) {
+	HTTPDo = func(req *http.Request) (*http.Response, error) {
 		body := io.NopCloser(strings.NewReader(`{"data":[{"id":"running-model"}]}`))
 		return &http.Response{StatusCode: 200, Body: body}, nil
 	}
@@ -740,14 +740,14 @@ func TestResolveRunTarget_TwoArgs(t *testing.T) {
 }
 
 func TestResolveRunTarget_OneArgServerRunning(t *testing.T) {
-	oldCap := execCapture
-	oldHTTP := httpDo
-	defer func() { execCapture = oldCap; httpDo = oldHTTP }()
+	oldCap := ExecCapture
+	oldHTTP := HTTPDo
+	defer func() { ExecCapture = oldCap; HTTPDo = oldHTTP }()
 
-	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
 		return "", errors.New("no podman")
 	}
-	httpDo = func(req *http.Request) (*http.Response, error) {
+	HTTPDo = func(req *http.Request) (*http.Response, error) {
 		body := io.NopCloser(strings.NewReader(`{"data":[{"id":"running-model"}]}`))
 		return &http.Response{StatusCode: 200, Body: body}, nil
 	}
@@ -762,11 +762,11 @@ func TestResolveRunTarget_OneArgServerRunning(t *testing.T) {
 }
 
 func TestEnsureServer_VRAMTooLarge(t *testing.T) {
-	oldCap := execCapture
+	oldCap := ExecCapture
 	oldGPU := config.DRMDeviceGlob
-	defer func() { execCapture = oldCap; config.DRMDeviceGlob = oldGPU }()
+	defer func() { ExecCapture = oldCap; config.DRMDeviceGlob = oldGPU }()
 
-	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
 		if strings.HasPrefix(name, "ramalama") && args[0] == "list" {
 			return `[{"name":"big-model","size":50000000000}]`, nil
 		}
@@ -790,12 +790,12 @@ func TestEnsureServer_VRAMTooLarge(t *testing.T) {
 }
 
 func TestEnsureServer_AlreadyRunning(t *testing.T) {
-	oldCap := execCapture
-	oldHTTP := httpDo
-	defer func() { execCapture = oldCap; httpDo = oldHTTP }()
+	oldCap := ExecCapture
+	oldHTTP := HTTPDo
+	defer func() { ExecCapture = oldCap; HTTPDo = oldHTTP }()
 
 	callCount := 0
-	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
 		callCount++
 		switch {
 		case strings.HasPrefix(name, "ramalama") && args[0] == "list":
@@ -809,7 +809,7 @@ func TestEnsureServer_AlreadyRunning(t *testing.T) {
 		}
 	}
 
-	httpDo = func(req *http.Request) (*http.Response, error) {
+	HTTPDo = func(req *http.Request) (*http.Response, error) {
 		body := io.NopCloser(strings.NewReader(`{"data":[{"id":"test-model"}]}`))
 		return &http.Response{StatusCode: 200, Body: body}, nil
 	}
@@ -831,13 +831,13 @@ func TestEnsureServer_AlreadyRunning(t *testing.T) {
 }
 
 func TestEnsureServer_StandardServe(t *testing.T) {
-	oldCap := execCapture
-	oldHTTP := httpDo
-	oldRun := execRun
-	defer func() { execCapture = oldCap; httpDo = oldHTTP; execRun = oldRun }()
+	oldCap := ExecCapture
+	oldHTTP := HTTPDo
+	oldRun := ExecRun
+	defer func() { ExecCapture = oldCap; HTTPDo = oldHTTP; ExecRun = oldRun }()
 
 	callCount := 0
-	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
 		callCount++
 		switch {
 		case strings.HasPrefix(name, "ramalama") && args[0] == "list":
@@ -851,7 +851,7 @@ func TestEnsureServer_StandardServe(t *testing.T) {
 
 	// Use call count: first call says "not running yet", second call says "done".
 	httpCall := 0
-	httpDo = func(req *http.Request) (*http.Response, error) {
+	HTTPDo = func(req *http.Request) (*http.Response, error) {
 		httpCall++
 		id := "other-model"
 		if httpCall >= 2 {
@@ -861,7 +861,7 @@ func TestEnsureServer_StandardServe(t *testing.T) {
 		return &http.Response{StatusCode: 200, Body: body}, nil
 	}
 
-	execRun = func(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
+	ExecRun = func(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
 		return nil // success
 	}
 
@@ -879,13 +879,13 @@ func TestEnsureServer_StandardServe(t *testing.T) {
 }
 
 func TestEnsureServer_DryRun(t *testing.T) {
-	oldCap := execCapture
-	oldHTTP := httpDo
-	oldRun := execRun
-	defer func() { execCapture = oldCap; httpDo = oldHTTP; execRun = oldRun }()
+	oldCap := ExecCapture
+	oldHTTP := HTTPDo
+	oldRun := ExecRun
+	defer func() { ExecCapture = oldCap; HTTPDo = oldHTTP; ExecRun = oldRun }()
 
 	callCount := 0
-	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
 		callCount++
 		switch {
 		case strings.HasPrefix(name, "ramalama") && args[0] == "list":
@@ -897,12 +897,12 @@ func TestEnsureServer_DryRun(t *testing.T) {
 		}
 	}
 
-	httpDo = func(req *http.Request) (*http.Response, error) {
+	HTTPDo = func(req *http.Request) (*http.Response, error) {
 		body := io.NopCloser(strings.NewReader(`{"data":[{"id":"other-model"}]}`))
 		return &http.Response{StatusCode: 200, Body: body}, nil
 	}
 
-	execRun = func(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
+	ExecRun = func(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
@@ -920,11 +920,11 @@ func TestEnsureServer_DryRun(t *testing.T) {
 }
 
 func TestEnsureServer_StrixHaloArgs(t *testing.T) {
-	oldCap := execCapture
-	oldHTTP := httpDo
-	oldRun := execRun
+	oldCap := ExecCapture
+	oldHTTP := HTTPDo
+	oldRun := ExecRun
 	oldGPU := config.DRMDeviceGlob
-	defer func() { execCapture = oldCap; httpDo = oldHTTP; execRun = oldRun; config.DRMDeviceGlob = oldGPU }()
+	defer func() { ExecCapture = oldCap; HTTPDo = oldHTTP; ExecRun = oldRun; config.DRMDeviceGlob = oldGPU }()
 
 	// Set up Strix Halo GPU (AMD + >60GB).
 	dir := t.TempDir()
@@ -936,7 +936,7 @@ func TestEnsureServer_StrixHaloArgs(t *testing.T) {
 	config.DRMDeviceGlob = filepath.Join(dir, "card*", "device")
 
 	callCount := 0
-	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
 		callCount++
 		switch {
 		case strings.HasPrefix(name, "ramalama") && args[0] == "list":
@@ -950,7 +950,7 @@ func TestEnsureServer_StrixHaloArgs(t *testing.T) {
 
 	// Two calls to ModelIDFromEndpoint: pre (not running) and post (now running).
 	httpCall := 0
-	httpDo = func(req *http.Request) (*http.Response, error) {
+	HTTPDo = func(req *http.Request) (*http.Response, error) {
 		httpCall++
 		id := "other-model"
 		if httpCall >= 2 {
@@ -961,7 +961,7 @@ func TestEnsureServer_StrixHaloArgs(t *testing.T) {
 	}
 
 	var capturedArgs []string
-	execRun = func(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
+	ExecRun = func(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
 		capturedArgs = args
 		return nil
 	}
@@ -977,14 +977,14 @@ func TestEnsureServer_StrixHaloArgs(t *testing.T) {
 }
 
 func TestResolveShowModel_Error(t *testing.T) {
-	oldCap := execCapture
-	oldHTTP := httpDo
-	defer func() { execCapture = oldCap; httpDo = oldHTTP }()
+	oldCap := ExecCapture
+	oldHTTP := HTTPDo
+	defer func() { ExecCapture = oldCap; HTTPDo = oldHTTP }()
 
-	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
 		return "", errors.New("no podman")
 	}
-	httpDo = func(req *http.Request) (*http.Response, error) {
+	HTTPDo = func(req *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 500, Body: io.NopCloser(strings.NewReader(""))}, nil
 	}
 
@@ -1005,14 +1005,14 @@ func TestResolveShowModel_CLI(t *testing.T) {
 }
 
 func TestResolveRunTarget_OneArgAmbiguous(t *testing.T) {
-	oldCap := execCapture
-	oldHTTP := httpDo
-	defer func() { execCapture = oldCap; httpDo = oldHTTP }()
+	oldCap := ExecCapture
+	oldHTTP := HTTPDo
+	defer func() { ExecCapture = oldCap; HTTPDo = oldHTTP }()
 
-	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
 		return "", errors.New("no podman")
 	}
-	httpDo = func(req *http.Request) (*http.Response, error) {
+	HTTPDo = func(req *http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 500, Body: io.NopCloser(strings.NewReader(""))}, nil
 	}
 
@@ -1023,7 +1023,7 @@ func TestResolveRunTarget_OneArgAmbiguous(t *testing.T) {
 }
 
 func TestUnitExists_Mock(t *testing.T) {
-	// UnitExists uses exec.CommandContext directly (not execCapture).
+	// UnitExists uses exec.CommandContext directly (not ExecCapture).
 	// It's inherently hard to mock without global injection.
 	// We just verify it runs without panicking.
 	ok := UnitExists(context.Background(), "nonexistent-unit-xyz")
@@ -1033,10 +1033,10 @@ func TestUnitExists_Mock(t *testing.T) {
 }
 
 func TestWaitForServer_Mock(t *testing.T) {
-	oldHTTP := httpDo
-	defer func() { httpDo = oldHTTP }()
+	oldHTTP := HTTPDo
+	defer func() { HTTPDo = oldHTTP }()
 
-	httpDo = func(req *http.Request) (*http.Response, error) {
+	HTTPDo = func(req *http.Request) (*http.Response, error) {
 		body := io.NopCloser(strings.NewReader(`{"data":[{"id":"ready"}]}`))
 		return &http.Response{StatusCode: 200, Body: body}, nil
 	}
@@ -1055,11 +1055,11 @@ func TestWaitForServer_Timeout(t *testing.T) {
 }
 
 func TestStopCompetingLocalModels_Mock(t *testing.T) {
-	oldCap := execCapture
-	oldRun := execRun
-	defer func() { execCapture = oldCap; execRun = oldRun }()
+	oldCap := ExecCapture
+	oldRun := ExecRun
+	defer func() { ExecCapture = oldCap; ExecRun = oldRun }()
 
-	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
 		if strings.HasPrefix(name, "systemctl") {
 			return "ramalama-other.service loaded active running\n", nil
 		}
@@ -1070,7 +1070,7 @@ func TestStopCompetingLocalModels_Mock(t *testing.T) {
 	}
 
 	var stopped []string
-	execRun = func(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
+	ExecRun = func(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
 		if name == "systemctl" && args[0] == "--user" && args[1] == "stop" {
 			stopped = append(stopped, args[2])
 		}
