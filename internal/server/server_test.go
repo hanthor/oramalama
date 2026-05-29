@@ -900,3 +900,112 @@ func TestRequestLogger(t *testing.T) {
 		t.Error("expected non-nil logger")
 	}
 }
+
+func TestPullHandler_BadJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/api/pull", s.pullHandler)
+	req := httptest.NewRequest("POST", "/api/pull", strings.NewReader("bad"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestChatHandler_BadJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/api/chat", s.chatHandler)
+	req := httptest.NewRequest("POST", "/api/chat", strings.NewReader("bad"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestOpenAIChatHandler_BadJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/v1/chat/completions", s.openaiChatHandler)
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader("bad"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestAnthropicHandler_BadJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/v1/messages", s.anthropicMessagesHandler)
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader("bad"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestShowHandler_BadJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/api/show", s.showHandler)
+	req := httptest.NewRequest("POST", "/api/show", strings.NewReader("bad"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestDeleteHandler_BadJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/api/delete", s.deleteModelHandler)
+	req := httptest.NewRequest("POST", "/api/delete", strings.NewReader("bad"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestCreateHandler_BadJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/api/create", s.createHandler)
+	req := httptest.NewRequest("POST", "/api/create", strings.NewReader("bad"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 400 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestStopAndDoneChannels(t *testing.T) {
+	s := newTestServer()
+	if s.ctxCancel == nil {
+		s.ctxCancel = func() {}
+	}
+	if s.ctxDone == nil {
+		s.ctxDone = make(chan struct{})
+	}
+	s.Stop()
+}

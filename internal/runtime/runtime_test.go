@@ -1156,3 +1156,34 @@ func TestResolveRunTarget_Ambiguous(t *testing.T) {
 		t.Error("expected error")
 	}
 }
+
+func TestRunOrPrint_DryRun(t *testing.T) {
+	var out bytes.Buffer
+	err := runOrPrint(context.Background(), true, "echo", []string{"hello"}, &out, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "[dry-run]") {
+		t.Errorf("output: %s", out.String())
+	}
+}
+func TestRunOrPrint_RealRun(t *testing.T) {
+	old := ExecRun
+	defer func() { ExecRun = old }()
+	ExecRun = func(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
+		io.WriteString(stdout, "ran")
+		return nil
+	}
+	var out bytes.Buffer
+	err := runOrPrint(context.Background(), false, "test", []string{"arg"}, &out, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "ran") {
+		t.Errorf("output: %s", out.String())
+	}
+}
+func TestDetectVRAM_Delegates(t *testing.T) {
+	total, free := DetectVRAM()
+	_, _ = total, free
+}
