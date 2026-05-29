@@ -1,3 +1,10 @@
+## [0.1.6](https://github.com/hanthor/oramalama/compare/v0.1.5...v0.1.6) (2026-05-29)
+
+
+### Bug Fixes
+
+* pass --model to launch in integration tests (CI headless) ([b57b6b2](https://github.com/hanthor/oramalama/commit/b57b6b292dcac36af98edeec24c8e01ee8dc3a59))
+
 ## [0.1.5](https://github.com/hanthor/oramalama/compare/v0.1.4...v0.1.5) (2026-04-25)
 
 
