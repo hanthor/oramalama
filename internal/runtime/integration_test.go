@@ -265,6 +265,62 @@ func TestIntegration_ModelDisplayName(t *testing.T) {
 	t.Logf("display name: %s", display)
 }
 
+// TestIntegration_LaunchDryRun tests the launch command pipeline without actually
+// launching tools. Uses --dry-run to verify configuration without side effects.
+func TestIntegration_LaunchDryRun(t *testing.T) {
+	checkRamalama(t)
+	ctx, cancel := context.WithTimeout(context.Background(), integrationTimeout)
+	defer cancel()
+
+	pullModel(ctx, t)
+	binary := buildBinary(t)
+
+	t.Run("server", func(t *testing.T) {
+		out, err := exec.CommandContext(ctx, binary,
+			"launch", "--tool", "server", "--dry-run",
+		).Output()
+		if err != nil {
+			t.Fatalf("launch --tool server --dry-run: %v\noutput: %s", err, string(out))
+		}
+		if !strings.Contains(string(out), "[dry-run]") {
+			t.Errorf("expected [dry-run] prefix in output: %s", string(out))
+		}
+		t.Logf("dry-run output: %s", string(out))
+	})
+
+	// Only test tools that are installed. These exercise the Configure* functions
+	// and the launch pipeline without requiring interactive TUI.
+	if _, err := exec.LookPath("opencode"); err == nil {
+		t.Run("opencode", func(t *testing.T) {
+			out, err := exec.CommandContext(ctx, binary,
+				"launch", "--tool", "opencode", "--dry-run",
+			).Output()
+			if err != nil {
+				t.Fatalf("launch opencode: %v", err)
+			}
+			if !strings.Contains(string(out), "opencode") {
+				t.Errorf("expected opencode in output: %s", string(out))
+			}
+			t.Logf("opencode dry-run: %s", string(out))
+		})
+	}
+
+	if _, err := exec.LookPath("pi"); err == nil {
+		t.Run("pi", func(t *testing.T) {
+			out, err := exec.CommandContext(ctx, binary,
+				"launch", "--tool", "pi", "--dry-run",
+			).Output()
+			if err != nil {
+				t.Fatalf("launch pi: %v", err)
+			}
+			if !strings.Contains(string(out), "pi") {
+				t.Errorf("expected pi in output: %s", string(out))
+			}
+			t.Logf("pi dry-run: %s", string(out))
+		})
+	}
+}
+
 // TestIntegration_FullSmoke runs all subcommands via the built binary.
 func TestIntegration_FullSmoke(t *testing.T) {
 	checkRamalama(t)
