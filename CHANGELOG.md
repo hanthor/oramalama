@@ -1,3 +1,10 @@
+## [0.1.8](https://github.com/hanthor/oramalama/compare/v0.1.7...v0.1.8) (2026-05-29)
+
+
+### Bug Fixes
+
+* make pi launch test resilient to unconfigured environments ([afb153c](https://github.com/hanthor/oramalama/commit/afb153cc0fabbe36d53a4ef662f033ecccbe59e2))
+
 ## [0.1.7](https://github.com/hanthor/oramalama/compare/v0.1.6...v0.1.7) (2026-05-29)
 
 
