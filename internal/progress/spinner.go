@@ -63,7 +63,7 @@ func (s *Spinner) String() string {
 }
 
 func (s *Spinner) start() {
-	s.ticker = time.NewTicker(100 * time.Millisecond)
+	s.ticker = newTicker(100 * time.Millisecond)
 	for range s.ticker.C {
 		s.value = (s.value + 1) % len(s.parts)
 		if !s.stopped.IsZero() {

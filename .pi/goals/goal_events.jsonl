@@ -1,0 +1,3 @@
+{"type":"goal_created","goalId":"mpram938-vgqrtv","objective":"Get every non-tui package to 90%+ test coverage: progress(85→90), api(82→90), model(81→90), runtime(77→90), server(73→90), cli(33→90). CLI launch refactor required.","sisyphus":true,"autoContinue":true,"at":"2026-05-29T19:06:29.636Z"}
+{"type":"task_list_set","goalId":"mpram938-vgqrtv","taskCount":8,"blockCompletion":false,"at":"2026-05-29T19:08:12.081Z"}
+{"type":"task_complete","goalId":"mpram938-vgqrtv","taskId":"progress-90","at":"2026-05-29T19:31:07.306Z"}

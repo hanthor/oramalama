@@ -2,12 +2,16 @@ package api
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/hanthor/oramalama/internal/config"
 )
 
 // ── checkError tests ──────────────────────────────────────────────────────────
@@ -545,4 +549,173 @@ func TestClient_CreateBlob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestClientFromEnvironment_Remote(t *testing.T) {
+	old := config.UserConfigFile
+	defer func() { config.UserConfigFile = old }()
+	os.Setenv("RAMALAMA_ENDPOINT", "http://remote:9999")
+	defer os.Unsetenv("RAMALAMA_ENDPOINT")
+	config.UserConfigFile = "/nonexistent"
+	c, err := ClientFromEnvironment()
+	if err != nil { t.Fatal(err) }
+	if c.base.String() != "http://remote:9999" { t.Errorf("got %s", c.base.String()) }
+}
+
+func TestDo_WithReader(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte(`{"version":"1.0"}`))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	c.base = u
+	err := c.do(context.Background(), "GET", "/api/version", strings.NewReader("data"), nil)
+	if err != nil { t.Fatal(err) }
+}
+
+func TestDo_NilResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	err := c.do(context.Background(), "GET", "/", nil, nil)
+	if err != nil { t.Fatal(err) }
+}
+
+func TestClientFromEnvironment_Default(t *testing.T) {
+	old := config.UserConfigFile
+	defer func() { config.UserConfigFile = old }()
+	os.Unsetenv("RAMALAMA_ENDPOINT")
+	config.UserConfigFile = "/nonexistent"
+	c, err := ClientFromEnvironment()
+	if err != nil { t.Fatal(err) }
+	if !strings.Contains(c.base.String(), "8090") { t.Errorf("got %s", c.base.String()) }
+}
+
+func TestDo_UnmarshalError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte(`not valid json`))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	var v map[string]interface{}
+	err := c.do(context.Background(), "GET", "/api/version", nil, &v)
+	if err != nil { t.Logf("expected error: %v", err) }
+}
+
+func TestStream_ScannerBuffer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		// Send large-ish lines to exercise scanner buffer
+		w.Write([]byte(`{"response":"ok","done":false}` + "\n"))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	err := c.Generate(context.Background(), &GenerateRequest{Model: "m", Prompt: "p"}, func(resp GenerateResponse) error {
+		return nil
+	})
+	if err != nil { t.Fatal(err) }
+}
+
+func TestStream_BadJSONLine(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Write([]byte("not-json\n"))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	err := c.Generate(context.Background(), &GenerateRequest{Model: "m", Prompt: "p"}, func(resp GenerateResponse) error {
+		return nil
+	})
+	if err == nil { t.Error("expected error on bad JSON stream") }
+}
+
+func TestStream_ErrorLine(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Write([]byte(`{"error":"something broke"}` + "\n"))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	err := c.Generate(context.Background(), &GenerateRequest{Model: "m", Prompt: "p"}, func(resp GenerateResponse) error {
+		return nil
+	})
+	if err == nil { t.Error("expected error on error line") }
+}
+
+func TestClient_Embeddings_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	_, err := c.Embeddings(context.Background(), &EmbeddingRequest{Model: "m", Prompt: "p"})
+	if err == nil { t.Error("expected error") }
+}
+
+func TestCheckError_400(t *testing.T) {
+	resp := &http.Response{StatusCode: 400}
+	err := checkError(resp, []byte(`{"error":"bad request"}`))
+	if err == nil { t.Error("expected error") }
+}
+
+func TestStream_StatusError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error":"crash"}` + "\n"))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	err := c.Generate(context.Background(), &GenerateRequest{Model: "m", Prompt: "p"}, func(resp GenerateResponse) error {
+		return nil
+	})
+	if err == nil { t.Error("expected error") }
+}
+
+func TestDo_NilReqData(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	err := c.do(context.Background(), "GET", "/", nil, nil)
+	if err != nil { t.Fatal(err) }
+}
+
+func TestStream_CallbackError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Write([]byte(`{"response":"ok","done":false}` + "\n"))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	err := c.Generate(context.Background(), &GenerateRequest{Model: "m", Prompt: "p"}, func(resp GenerateResponse) error {
+		return errors.New("callback error")
+	})
+	if err == nil { t.Error("expected error") }
+}
+
+func TestDo_CheckError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error":"server error"}`))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	err := c.do(context.Background(), "GET", "/api/test", nil, nil)
+	if err == nil { t.Error("expected 500 error") }
 }

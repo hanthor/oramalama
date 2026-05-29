@@ -346,3 +346,43 @@ func TestFormatParams_Empty(t *testing.T) {
 		t.Errorf("expected empty output, got %d keys", len(out))
 	}
 }
+
+
+func TestDuration_UnmarshalJSON_NegativeString(t *testing.T) {
+	var d Duration
+	if err := json.Unmarshal([]byte(`"-5s"`), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Duration != time.Duration(math.MaxInt64) {
+		t.Errorf("got %v, expected MaxInt64", d.Duration)
+	}
+}
+
+func TestThinkValue_UnmarshalJSON_Medium(t *testing.T) {
+	var tv ThinkValue
+	if err := json.Unmarshal([]byte(`"medium"`), &tv); err != nil {
+		t.Fatal(err)
+	}
+	if tv.Value != "medium" { t.Errorf("got %v", tv.Value) }
+}
+
+func TestThinkValue_UnmarshalJSON_Low(t *testing.T) {
+	var tv ThinkValue
+	if err := json.Unmarshal([]byte(`"low"`), &tv); err != nil {
+		t.Fatal(err)
+	}
+	if tv.Value != "low" { t.Errorf("got %v", tv.Value) }
+}
+
+func TestFormatParams_StringValue(t *testing.T) {
+	out, err := FormatParams(map[string]interface{}{"stop": []interface{}{"word"}})
+	if err != nil { t.Fatal(err) }
+	if _, ok := out["stop"]; !ok { t.Error("expected stop") }
+}
+
+func TestFormatParams_UseMmap_False(t *testing.T) {
+	out, err := FormatParams(map[string]interface{}{"use_mmap": false})
+	if err != nil { t.Fatal(err) }
+	b, ok := out["use_mmap"].(*bool)
+	if !ok || *b != false { t.Errorf("got %v", out["use_mmap"]) }
+}

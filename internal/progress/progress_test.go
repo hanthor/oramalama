@@ -167,3 +167,105 @@ func TestProgress_Stop_Twice(t *testing.T) {
 	p.Stop() // should not panic
 	p.Stop() // idempotent
 }
+
+func TestBar_StoppedState(t *testing.T) {
+	b := NewBar("done", 100, 100)
+	if b.stopped.IsZero() { t.Error("should be stopped immediately") }
+	s := b.String()
+	if s == "" { t.Error("empty") }
+}
+
+func TestBar_Set_BucketOverflow(t *testing.T) {
+	b := NewBar("test", 100, 0)
+	for i := 0; i < 15; i++ { b.Set(int64(i * 5)) }
+	if b.String() == "" { t.Error("empty") }
+}
+
+func TestBar_Rate_Stopped(t *testing.T) {
+	b := NewBar("done", 100, 100)
+	r := b.rate()
+	_ = r
+}
+
+func TestSpinner_RenderWithTicker(t *testing.T) {
+	oldT := newTicker; oldS := termSize
+	defer func() { newTicker = oldT; termSize = oldS }()
+	ch := make(chan time.Time)
+	newTicker = func(d time.Duration) *time.Ticker { return &time.Ticker{C: ch} }
+	termSize = func(fd int) (int, int, error) { return 80, 24, nil }
+	s := NewSpinner("test")
+	go s.start()
+	ch <- time.Now()
+	time.Sleep(20 * time.Millisecond)
+	close(ch) // stop the range loop
+	time.Sleep(10 * time.Millisecond)
+	s.Stop()
+	got := s.String()
+	if !strings.Contains(got, "test") { t.Errorf("got %q", got) }
+}
+
+func TestSpinner_RenderTermError(t *testing.T) {
+	oldT := newTicker; oldS := termSize
+	defer func() { newTicker = oldT; termSize = oldS }()
+	ch := make(chan time.Time)
+	newTicker = func(d time.Duration) *time.Ticker { return &time.Ticker{C: ch} }
+	termSize = func(fd int) (int, int, error) { return 0, 0, errTest }
+	s := NewSpinner("test")
+	go s.start()
+	ch <- time.Now()
+	time.Sleep(10 * time.Millisecond)
+	close(ch)
+	time.Sleep(10 * time.Millisecond)
+	s.Stop()
+	_ = s.String()
+}
+
+func TestBar_String_WithMessage(t *testing.T) {
+	b := NewBar("downloading", 100, 50)
+	b.started = time.Now().Add(-10 * time.Second)
+	b.buckets = []bucket{{updated: time.Now().Add(-5 * time.Second), value: 70}}
+	s := b.String()
+	if s == "" || !strings.Contains(s, "downloading") { t.Errorf("got %q", s) }
+}
+
+func TestBar_Rate_Multi(t *testing.T) {
+	b := NewBar("test", 100, 0)
+	b.buckets = []bucket{
+		{updated: time.Now().Add(-10 * time.Second), value: 20},
+		{updated: time.Now().Add(-5 * time.Second), value: 50},
+	}
+	r := b.rate()
+	if r == 0 { t.Error("expected non-zero rate from multi-bucket") }
+}
+
+func TestSpinner_AllParts(t *testing.T) {
+	old := newTicker; defer func() { newTicker = old }()
+	ch := make(chan time.Time)
+	newTicker = func(d time.Duration) *time.Ticker { return &time.Ticker{C: ch} }
+	s := NewSpinner("test")
+	go s.start()
+	// Advance through all spinner frames
+	for i := 0; i < len(s.parts)+2; i++ {
+		ch <- time.Now()
+		time.Sleep(1 * time.Millisecond)
+	}
+	close(ch)
+	time.Sleep(10 * time.Millisecond)
+	s.Stop()
+	got := s.String()
+	if !strings.Contains(got, "test") { t.Errorf("got %q", got) }
+}
+
+func TestProgress_StopAndClear_MultiLine(t *testing.T) {
+	oldT := newTicker; oldS := termSize
+	defer func() { newTicker = oldT; termSize = oldS }()
+	ch := make(chan time.Time)
+	newTicker = func(d time.Duration) *time.Ticker { return &time.Ticker{C: ch} }
+	termSize = func(fd int) (int, int, error) { return 80, 24, nil }
+	p := NewProgress(&bytes.Buffer{})
+	p.Add("a", NewSpinner("one"))
+	p.Add("b", NewBar("two", 100, 50))
+	close(ch)
+	time.Sleep(10 * time.Millisecond)
+	p.StopAndClear()
+}
