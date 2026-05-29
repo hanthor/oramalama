@@ -9,7 +9,6 @@ on:
 
 env:
   GO_VERSION: "1.26"
-  # Public bartowski repo — ungated, reliable, 380MB download.
   HF_REPO: "bartowski/Qwen2.5-0.5B-Instruct-GGUF"
   HF_FILE: "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"
 
@@ -32,6 +31,11 @@ jobs:
           pip install ramalama huggingface_hub
           ramalama --version
 
+      - name: Install coding tools
+        run: |
+          npm install -g @earendil-works/pi-coding-agent opencode-ai 2>/dev/null || true
+          echo "Tools installed (or already present)"
+
       - name: Download test model
         run: |
           python3 -c "
@@ -50,7 +54,7 @@ jobs:
           ramalama list
 
       - name: Run unit tests
-        run: go test -v -count=1 ./internal/config/ ./internal/runtime/ ./internal/api/ ./internal/cli/ ./internal/model/ ./internal/progress/ ./internal/tui/
+        run: go test -v -count=1 ./internal/config/ ./internal/runtime/ ./internal/api/ ./internal/cli/ ./internal/model/ ./internal/progress/ ./internal/tui/ ./internal/server/
 
       - name: Run integration tests
         run: go test -tags=integration -v -count=1 -timeout 10m ./internal/runtime/

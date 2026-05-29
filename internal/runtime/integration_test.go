@@ -418,3 +418,62 @@ func buildBinary(t *testing.T) string {
 	}
 	return binaryPath
 }
+
+// TestIntegration_LaunchServerReal starts server via launch --tool server.
+func TestIntegration_LaunchServerReal(t *testing.T) {
+	checkRamalama(t)
+	ctx, cancel := context.WithTimeout(context.Background(), integrationTimeout)
+	defer cancel()
+	pullModel(ctx, t)
+	binary := buildBinary(t)
+
+	cmd := exec.CommandContext(ctx, binary,
+		"--model", integrationModel,
+		"launch", "--tool", "server",
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("launch server: %v\noutput: %s", err, string(out))
+	}
+	if !strings.Contains(string(out), "server ready") {
+		t.Errorf("expected 'server ready': %s", string(out))
+	}
+	t.Logf("launch server: %s", string(out))
+}
+
+// TestIntegration_CodingToolConfig tests launch --dry-run for pi + opencode.
+func TestIntegration_CodingToolConfig(t *testing.T) {
+	checkRamalama(t)
+	ctx, cancel := context.WithTimeout(context.Background(), integrationTimeout)
+	defer cancel()
+	pullModel(ctx, t)
+	binary := buildBinary(t)
+
+	t.Run("pi", func(t *testing.T) {
+		out, err := exec.CommandContext(ctx, binary,
+			"--dry-run", "--model", integrationModel,
+			"launch", "--tool", "pi",
+		).Output()
+		if err != nil {
+			t.Fatalf("launch pi: %v\noutput: %s", err, string(out))
+		}
+		if !strings.Contains(string(out), "pi") {
+			t.Errorf("expected pi: %s", string(out))
+		}
+		t.Logf("pi: %s", string(out))
+	})
+
+	t.Run("opencode", func(t *testing.T) {
+		out, err := exec.CommandContext(ctx, binary,
+			"--dry-run", "--model", integrationModel,
+			"launch", "--tool", "opencode",
+		).Output()
+		if err != nil {
+			t.Fatalf("launch opencode: %v\noutput: %s", err, string(out))
+		}
+		if !strings.Contains(string(out), "opencode") {
+			t.Errorf("expected opencode: %s", string(out))
+		}
+		t.Logf("opencode: %s", string(out))
+	})
+}
