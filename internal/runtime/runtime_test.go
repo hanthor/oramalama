@@ -1187,3 +1187,62 @@ func TestDetectVRAM_Delegates(t *testing.T) {
 	total, free := DetectVRAM()
 	_, _ = total, free
 }
+
+func TestResolveRunTarget_TwoArgsModel(t *testing.T) {
+	model, prompt, err := ResolveRunTarget(context.Background(), "", []string{"my-model", "hello world"})
+	if err != nil { t.Fatal(err) }
+	if model != "my-model" || prompt != "hello world" { t.Errorf("%q %q", model, prompt) }
+}
+
+func TestResolveRunTarget_OneArgServer(t *testing.T) {
+	oldC := ExecCapture; oldH := HTTPDo
+	defer func() { ExecCapture = oldC; HTTPDo = oldH }()
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		return "", errors.New("no")
+	}
+	HTTPDo = func(req *http.Request) (*http.Response, error) {
+		body := io.NopCloser(strings.NewReader(`{"data":[{"id":"running"}]}`))
+		return &http.Response{StatusCode: 200, Body: body}, nil
+	}
+	model, prompt, err := ResolveRunTarget(context.Background(), "", []string{"hello"})
+	if err != nil { t.Fatal(err) }
+	if model != "running" || prompt != "hello" { t.Errorf("%q %q", model, prompt) }
+}
+
+func TestResolveRunTarget_OneArgModelMatch(t *testing.T) {
+	oldC := ExecCapture; oldH := HTTPDo
+	defer func() { ExecCapture = oldC; HTTPDo = oldH }()
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		if args[0] == "list" { return `[{"name":"my-model","size":100}]`, nil }
+		return "", errors.New("no")
+	}
+	HTTPDo = func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 500, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+	model, _, err := ResolveRunTarget(context.Background(), "", []string{"my-model"})
+	if err != nil { t.Fatal(err) }
+	if model != "my-model" { t.Errorf("%q", model) }
+}
+
+func TestEnsureServer_LowVRAM_Warning(t *testing.T) {
+	oldC := ExecCapture; oldH := HTTPDo; oldR := ExecRun; oldG := config.DRMDeviceGlob
+	defer func() { ExecCapture = oldC; HTTPDo = oldH; ExecRun = oldR; config.DRMDeviceGlob = oldG }()
+	dir := t.TempDir()
+	cardDir := filepath.Join(dir, "card0", "device")
+	os.MkdirAll(cardDir, 0755)
+	os.WriteFile(filepath.Join(cardDir, "vendor"), []byte("0x1002\n"), 0644)
+	os.WriteFile(filepath.Join(cardDir, "mem_info_vram_total"), []byte("17179869184\n"), 0644)
+	os.WriteFile(filepath.Join(cardDir, "mem_info_vram_used"), []byte("15032385536\n"), 0644)
+	config.DRMDeviceGlob = filepath.Join(dir, "card*", "device")
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		if args[0] == "list" { return `[{"name":"big","size":6000000000}]`, nil }
+		return "", errors.New("no")
+	}
+	HTTPDo = func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"data":[{"id":"other"}]}`))}, nil
+	}
+	ExecRun = func(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error { return nil }
+	var out bytes.Buffer
+	_, _, err := EnsureServer(context.Background(), "big", false, &out, &out)
+	if err != nil { t.Logf("low VRAM: %v", err) }
+}
