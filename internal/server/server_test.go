@@ -787,3 +787,63 @@ func TestAnthropicMessagesHandler(t *testing.T) {
 		t.Errorf("status: %d, body: %s", w.Code, w.Body.String())
 	}
 }
+
+func TestGenerateHandler_Stream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/api/generate", s.generateHandler)
+	body := `{"model":"test","prompt":"hello","stream":true}`
+	req := httptest.NewRequest("POST", "/api/generate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestChatHandler_Stream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/api/chat", s.chatHandler)
+	body := `{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	req := httptest.NewRequest("POST", "/api/chat", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestOpenAIChatHandler_Stream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/v1/chat/completions", s.openaiChatHandler)
+	body := `{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestOpenAICompletionHandler_Stream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/v1/completions", s.openaiCompletionHandler)
+	body := `{"model":"test","prompt":"hello","stream":true}`
+	req := httptest.NewRequest("POST", "/v1/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Errorf("status: %d", w.Code)
+	}
+}

@@ -133,3 +133,9 @@ func TestStepBar_Set(t *testing.T) {
 		t.Errorf("expected '3' in step bar: %q", got)
 	}
 }
+
+func TestHumanBytes_EdgeCases(t *testing.T) {
+	if got := humanBytes(TeraByte); got != "1 TB" {
+		t.Errorf("got %q", got)
+	}
+}

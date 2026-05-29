@@ -287,3 +287,44 @@ func TestPSCmd(t *testing.T) {
 		t.Logf("ps output: %s (err: %v)", out.String(), err)
 	}
 }
+
+func TestRunCmd_Mock(t *testing.T) {
+	oldCap := runtime.ExecCapture
+	oldHTTP := runtime.HTTPDo
+	defer func() { runtime.ExecCapture = oldCap; runtime.HTTPDo = oldHTTP }()
+
+	runtime.ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		return `[{"name":"test-model","size":100}]`, nil
+	}
+	runtime.HTTPDo = func(req *http.Request) (*http.Response, error) {
+		body := io.NopCloser(strings.NewReader(
+			`{"choices":[{"message":{"content":"hello response"}}],"usage":{"prompt_tokens":1,"completion_tokens":2}}`))
+		return &http.Response{StatusCode: 200, Body: body}, nil
+	}
+
+	var out bytes.Buffer
+	cmd := &runCmd{r: NewRunner(&out, new(bytes.Buffer))}
+	err := cmd.Run(context.Background(), []string{"test-model", "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "hello response") {
+		t.Errorf("output: %s", out.String())
+	}
+}
+
+func TestSearchCmd_Mock(t *testing.T) {
+	oldCap := runtime.ExecCapture
+	defer func() { runtime.ExecCapture = oldCap }()
+
+	runtime.ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		return "16", nil
+	}
+
+	var out bytes.Buffer
+	cmd := &searchCmd{r: NewRunner(&out, new(bytes.Buffer))}
+	err := cmd.Run(context.Background(), nil)
+	if err == nil {
+		t.Log("search cmd ran (llmfit may not be installed)")
+	}
+}

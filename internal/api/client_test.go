@@ -397,3 +397,43 @@ func TestClient_EmbeddingsAlias(t *testing.T) {
 		t.Errorf("embedding: %v", resp.Embedding)
 	}
 }
+
+func TestClient_Do_ErrorResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error":"crash"}`))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	_, err := c.Status(context.Background())
+	if err == nil {
+		t.Error("expected error")
+	}
+}
+
+func TestClient_ListRunning_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	_, err := c.ListRunning(context.Background())
+	if err == nil {
+		t.Error("expected error")
+	}
+}
+
+func TestClient_Embed_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	_, err := c.Embed(context.Background(), &EmbedRequest{Model: "m", Input: "t"})
+	if err == nil {
+		t.Error("expected error")
+	}
+}
