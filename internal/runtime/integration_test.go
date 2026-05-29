@@ -277,6 +277,7 @@ func TestIntegration_LaunchDryRun(t *testing.T) {
 
 	t.Run("server", func(t *testing.T) {
 		out, err := exec.CommandContext(ctx, binary,
+			"--model", integrationModel,
 			"launch", "--tool", "server", "--dry-run",
 		).Output()
 		if err != nil {
@@ -293,6 +294,7 @@ func TestIntegration_LaunchDryRun(t *testing.T) {
 	if _, err := exec.LookPath("opencode"); err == nil {
 		t.Run("opencode", func(t *testing.T) {
 			out, err := exec.CommandContext(ctx, binary,
+				"--model", integrationModel,
 				"launch", "--tool", "opencode", "--dry-run",
 			).Output()
 			if err != nil {
@@ -308,6 +310,7 @@ func TestIntegration_LaunchDryRun(t *testing.T) {
 	if _, err := exec.LookPath("pi"); err == nil {
 		t.Run("pi", func(t *testing.T) {
 			out, err := exec.CommandContext(ctx, binary,
+				"--model", integrationModel,
 				"launch", "--tool", "pi", "--dry-run",
 			).Output()
 			if err != nil {
