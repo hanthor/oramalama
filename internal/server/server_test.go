@@ -1,10 +1,15 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/hanthor/oramalama/internal/api"
+	"github.com/hanthor/oramalama/internal/client"
 	"github.com/hanthor/oramalama/internal/config"
 )
 
@@ -354,4 +359,284 @@ func TestConvertOllamaChatToOpenAI(t *testing.T) {
 	// Note: convertOllamaChatToOpenAI passes resp.Message (struct) to messageContent
 	// which doesn't handle struct types. We just verify the non-content fields.
 	_ = openai
+}
+
+// ── Mock client ───────────────────────────────────────────────────────────────
+
+type mockClient struct {
+	models     func() *api.OpenAIModelList
+	completion func() *api.OpenAICompletionResponse
+	chat       func() *api.OpenAIChatCompletionResponse
+}
+
+func (m *mockClient) OpenAIModels(ctx context.Context, resp *api.OpenAIModelList) error {
+	if m.models != nil {
+		*resp = *m.models()
+	}
+	return nil
+}
+func (m *mockClient) OpenAICompletion(ctx context.Context, req *api.CompletionRequest, resp *api.OpenAICompletionResponse) error {
+	if m.completion != nil {
+		*resp = *m.completion()
+	}
+	return nil
+}
+func (m *mockClient) OpenAICompletionStream(ctx context.Context, req *api.CompletionRequest, fn client.StreamHandler) error {
+	return nil
+}
+func (m *mockClient) OpenAIChat(ctx context.Context, req *api.ChatCompletionRequest, resp *api.OpenAIChatCompletionResponse) error {
+	if m.chat != nil {
+		*resp = *m.chat()
+	}
+	return nil
+}
+func (m *mockClient) OpenAIChatStream(ctx context.Context, req *api.ChatCompletionRequest, fn client.StreamHandler) error {
+	return nil
+}
+func (m *mockClient) OpenAIEmbeddings(ctx context.Context, req *api.EmbedVectorsRequest, resp *api.OpenAIEmbeddingResponse) error {
+	return nil
+}
+func (m *mockClient) Embed(ctx context.Context, req *api.EmbedRequest, resp *api.EmbedResponse) error {
+	return nil
+}
+func (m *mockClient) Embeddings(ctx context.Context, req *api.EmbeddingRequest, resp *api.EmbeddingResponse) error {
+	return nil
+}
+func (m *mockClient) Show(ctx context.Context, req *api.ShowRequest, resp *api.ShowResponse) error {
+	resp.License = "MIT"
+	return nil
+}
+func (m *mockClient) Create(ctx context.Context, req *api.CreateRequest) (*api.CreateResponse, error) {
+	return &api.CreateResponse{Status: "ok"}, nil
+}
+func (m *mockClient) DeleteModel(ctx context.Context, req *api.DeleteRequest) (*api.DeleteResponse, error) {
+	return &api.DeleteResponse{Status: "ok"}, nil
+}
+func (m *mockClient) CopyModel(ctx context.Context, req *api.CopyRequest) (*api.CopyResponse, error) {
+	return &api.CopyResponse{Status: "ok"}, nil
+}
+func (m *mockClient) PostStream(ctx context.Context, path string, reqData any, fn client.StreamHandler) error {
+	return nil
+}
+
+func newTestServer() *Server {
+	return &Server{
+		client: &mockClient{
+			models: func() *api.OpenAIModelList {
+				return &api.OpenAIModelList{
+					Object: "list",
+					Data:   []api.OpenAIModel{{ID: "test-model", Object: "model"}},
+				}
+			},
+			completion: func() *api.OpenAICompletionResponse {
+				return &api.OpenAICompletionResponse{
+					Model: "test",
+					Choices: []api.OpenAICompletionChoice{
+						{Index: 0, Text: "response"},
+					},
+					Usage: api.OpenAIUsage{PromptTokens: 1, CompletionTokens: 2},
+				}
+			},
+			chat: func() *api.OpenAIChatCompletionResponse {
+				return &api.OpenAIChatCompletionResponse{
+					Model: "test",
+					Choices: []api.OpenAIChatChoice{
+						{Index: 0, Message: api.OpenAIChatMessage{Role: "assistant", Content: "hello"}},
+					},
+				}
+			},
+		},
+		cfg: &config.Config{},
+	}
+}
+
+// ── Handler tests via httptest ────────────────────────────────────────────────
+
+func TestVersionHandler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.GET("/api/version", s.versionHandler)
+
+	req := httptest.NewRequest("GET", "/api/version", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("status: %d", w.Code)
+	}
+	var v api.VersionResponse
+	json.Unmarshal(w.Body.Bytes(), &v)
+	if v.Version == "" {
+		t.Error("expected version")
+	}
+}
+
+func TestRootHandler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.GET("/", s.rootHandler)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestTagsHandler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.GET("/api/tags", s.tagsHandler)
+
+	req := httptest.NewRequest("GET", "/api/tags", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("status: %d", w.Code)
+	}
+	var resp api.TagsResponse
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if len(resp.Models) != 1 || resp.Models[0].Name != "test-model" {
+		t.Errorf("models: %+v", resp.Models)
+	}
+}
+
+func TestOpenaiModelsHandler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.GET("/v1/models", s.openaiModelsHandler)
+
+	req := httptest.NewRequest("GET", "/v1/models", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("status: %d", w.Code)
+	}
+	var resp api.OpenAIModelList
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if len(resp.Data) == 0 {
+		t.Error("expected models")
+	}
+}
+
+func TestStatusHandler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.GET("/api/status", s.statusHandler)
+
+	req := httptest.NewRequest("GET", "/api/status", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestGenerateHandler_NonStream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/api/generate", s.generateHandler)
+
+	body := `{"model":"test","prompt":"hello","stream":false}`
+	req := httptest.NewRequest("POST", "/api/generate", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("status: %d, body: %s", w.Code, w.Body.String())
+	}
+	var resp api.GenerateResponse
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.Response != "response" {
+		t.Errorf("response: %q", resp.Response)
+	}
+}
+
+func TestOpenaiChatHandler_NonStream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/v1/chat/completions", s.openaiChatHandler)
+
+	body := `{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":false}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("status: %d, body: %s", w.Code, w.Body.String())
+	}
+	var resp api.OpenAIChatCompletionResponse
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if len(resp.Choices) == 0 {
+		t.Error("expected choices")
+	}
+}
+
+func TestShowHandler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/api/show", s.showHandler)
+
+	body := `{"model":"test"}`
+	req := httptest.NewRequest("POST", "/api/show", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("status: %d", w.Code)
+	}
+	var resp api.ShowResponse
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.License != "MIT" {
+		t.Errorf("license: %q", resp.License)
+	}
+}
+
+func TestCreateHandler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/api/create", s.createHandler)
+
+	body := `{"model":"test"}`
+	req := httptest.NewRequest("POST", "/api/create", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestGenerateHandler_BadJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/api/generate", s.generateHandler)
+
+	req := httptest.NewRequest("POST", "/api/generate", strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != 400 {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
 }

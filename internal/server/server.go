@@ -18,9 +18,26 @@ import (
 	"github.com/hanthor/oramalama/internal/model"
 )
 
+// ServerClient is the interface to the oramalama HTTP client.
+type ServerClient interface {
+	OpenAIModels(ctx context.Context, resp *api.OpenAIModelList) error
+	OpenAICompletion(ctx context.Context, req *api.CompletionRequest, resp *api.OpenAICompletionResponse) error
+	OpenAICompletionStream(ctx context.Context, req *api.CompletionRequest, fn client.StreamHandler) error
+	OpenAIChat(ctx context.Context, req *api.ChatCompletionRequest, resp *api.OpenAIChatCompletionResponse) error
+	OpenAIChatStream(ctx context.Context, req *api.ChatCompletionRequest, fn client.StreamHandler) error
+	OpenAIEmbeddings(ctx context.Context, req *api.EmbedVectorsRequest, resp *api.OpenAIEmbeddingResponse) error
+	Embed(ctx context.Context, req *api.EmbedRequest, resp *api.EmbedResponse) error
+	Embeddings(ctx context.Context, req *api.EmbeddingRequest, resp *api.EmbeddingResponse) error
+	Show(ctx context.Context, req *api.ShowRequest, resp *api.ShowResponse) error
+	Create(ctx context.Context, req *api.CreateRequest) (*api.CreateResponse, error)
+	DeleteModel(ctx context.Context, req *api.DeleteRequest) (*api.DeleteResponse, error)
+	CopyModel(ctx context.Context, req *api.CopyRequest) (*api.CopyResponse, error)
+	PostStream(ctx context.Context, path string, reqData any, fn client.StreamHandler) error
+}
+
 // Server wraps the Ollama-compatible HTTP API.
 type Server struct {
-	client       *client.Client
+	client       ServerClient
 	containerMgr *container.Manager
 	modelMgr     *model.Manager
 	cfg          *config.Config
