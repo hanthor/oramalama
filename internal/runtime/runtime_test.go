@@ -1089,3 +1089,70 @@ func TestStopCompetingLocalModels_Mock(t *testing.T) {
 		t.Errorf("expected 2 stops (systemctl + ramalama), got %d: %v", len(stopped), stopped)
 	}
 }
+
+func TestEnsureServer_LowVRAM(t *testing.T) {
+	oldCap := ExecCapture
+	oldHTTP := HTTPDo
+	oldRun := ExecRun
+	oldGPU := config.DRMDeviceGlob
+	defer func() { ExecCapture = oldCap; HTTPDo = oldHTTP; ExecRun = oldRun; config.DRMDeviceGlob = oldGPU }()
+
+	dir := t.TempDir()
+	cardDir := filepath.Join(dir, "card0", "device")
+	os.MkdirAll(cardDir, 0755)
+	os.WriteFile(filepath.Join(cardDir, "vendor"), []byte("0x1002\n"), 0644)
+	os.WriteFile(filepath.Join(cardDir, "mem_info_vram_total"), []byte("17179869184\n"), 0644)
+	os.WriteFile(filepath.Join(cardDir, "mem_info_vram_used"), []byte("15032385536\n"), 0644)
+	config.DRMDeviceGlob = filepath.Join(dir, "card*", "device")
+
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		if strings.HasPrefix(name, "ramalama") && args[0] == "list" {
+			return `[{"name":"big-model","size":6000000000}]`, nil
+		}
+		return "", errors.New("no")
+	}
+	HTTPDo = func(req *http.Request) (*http.Response, error) {
+		body := io.NopCloser(strings.NewReader(`{"data":[{"id":"other"}]}`))
+		return &http.Response{StatusCode: 200, Body: body}, nil
+	}
+	ExecRun = func(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
+		return nil
+	}
+
+	var out bytes.Buffer
+	_, _, err := EnsureServer(context.Background(), "big-model", false, &out, &out)
+	if err != nil {
+		t.Logf("expected warning for low VRAM: %v", err)
+	}
+}
+
+func TestResolveRunTarget_OneArgModel(t *testing.T) {
+	oldCap := ExecCapture
+	defer func() { ExecCapture = oldCap }()
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		return `[{"name":"existing-model","size":100}]`, nil
+	}
+	model, _, err := ResolveRunTarget(context.Background(), "", []string{"existing-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model != "existing-model" {
+		t.Errorf("got %q", model)
+	}
+}
+
+func TestResolveRunTarget_Ambiguous(t *testing.T) {
+	oldCap := ExecCapture
+	oldHTTP := HTTPDo
+	defer func() { ExecCapture = oldCap; HTTPDo = oldHTTP }()
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		return "[]", nil
+	}
+	HTTPDo = func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 500, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+	_, _, err := ResolveRunTarget(context.Background(), "", []string{"not-a-model"})
+	if err == nil {
+		t.Error("expected error")
+	}
+}

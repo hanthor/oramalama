@@ -847,3 +847,56 @@ func TestOpenAICompletionHandler_Stream(t *testing.T) {
 		t.Errorf("status: %d", w.Code)
 	}
 }
+
+func TestPullHandler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/api/pull", s.pullHandler)
+	body := `{"model":"test"}`
+	req := httptest.NewRequest("POST", "/api/pull", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestPushHandler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/api/push", s.pushHandler)
+	body := `{"model":"test"}`
+	req := httptest.NewRequest("POST", "/api/push", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestAnthropicMessagesHandler_Stream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/v1/messages", s.anthropicMessagesHandler)
+	body := `{"model":"test","messages":[{"role":"user","content":"hi"}],"max_tokens":100,"stream":true}`
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestRequestLogger(t *testing.T) {
+	s := newTestServer()
+	fn := s.requestLogger()
+	if fn == nil {
+		t.Error("expected non-nil logger")
+	}
+}

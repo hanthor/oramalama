@@ -437,3 +437,112 @@ func TestClient_Embed_Error(t *testing.T) {
 		t.Error("expected error")
 	}
 }
+
+func TestClient_Version_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	_, err := c.Version(context.Background())
+	if err == nil {
+		t.Error("expected error")
+	}
+}
+
+func TestClient_Show_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	_, err := c.Show(context.Background(), &ShowRequest{Model: "m"})
+	if err == nil {
+		t.Error("expected error")
+	}
+}
+
+func TestClient_Stream_NDJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Write([]byte(`{"response":"a","done":false}` + "\n"))
+		w.Write([]byte(`{"response":"b","done":true}` + "\n"))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	count := 0
+	err := c.Generate(context.Background(), &GenerateRequest{Model: "m", Prompt: "p"}, func(resp GenerateResponse) error {
+		count++
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Errorf("expected 2 chunks, got %d", count)
+	}
+}
+
+func TestClient_Pull(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Write([]byte(`{"status":"downloading"}` + "\n"))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	err := c.Pull(context.Background(), &PullRequest{Model: "m"}, func(resp ProgressResponse) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClient_Push(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Write([]byte(`{"status":"uploading"}` + "\n"))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	err := c.Push(context.Background(), &PushRequest{Model: "m"}, func(resp ProgressResponse) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClient_Create(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Write([]byte(`{"status":"creating"}` + "\n"))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	err := c.Create(context.Background(), &CreateRequest{Model: "m"}, func(resp ProgressResponse) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClient_CreateBlob(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	err := c.CreateBlob(context.Background(), "sha256:abc", strings.NewReader("data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+}
