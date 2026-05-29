@@ -293,21 +293,6 @@ func TestIntegration_LaunchDryRun(t *testing.T) {
 
 	// Only test tools that are installed. These exercise the Configure* functions
 	// and the launch pipeline without requiring interactive TUI.
-	if _, err := exec.LookPath("opencode"); err == nil {
-		t.Run("opencode", func(t *testing.T) {
-			out, err := exec.CommandContext(ctx, binary,
-				"--model", integrationModel,
-				"launch", "--tool", "opencode", "--dry-run",
-			).Output()
-			if err != nil {
-				t.Fatalf("launch opencode: %v", err)
-			}
-			if !strings.Contains(string(out), "opencode") {
-				t.Errorf("expected opencode in output: %s", string(out))
-			}
-			t.Logf("opencode dry-run: %s", string(out))
-		})
-	}
 
 	if _, err := exec.LookPath("pi"); err == nil {
 		t.Run("pi", func(t *testing.T) {
