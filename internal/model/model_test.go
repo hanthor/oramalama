@@ -402,3 +402,110 @@ func TestSizeCheck_WithGPU(t *testing.T) {
 		t.Error("expected 'too large' error for 10GB model on 8GB GPU")
 	}
 }
+
+func TestList_RemoteBadJSON(t *testing.T) {
+	oldRun := runOutput
+	defer func() { runOutput = oldRun }()
+
+	runOutput = func(ctx context.Context, name string, args ...string) (string, error) {
+		return "garbage", nil
+	}
+
+	mgr := NewManager(&config.Config{RemoteEndpoint: "http://remote:8080"})
+	_, err := mgr.List(context.Background())
+	if err == nil {
+		t.Error("expected parse error from bad remote JSON")
+	}
+}
+
+func TestList_RemoteEmptyData(t *testing.T) {
+	oldRun := runOutput
+	defer func() { runOutput = oldRun }()
+
+	runOutput = func(ctx context.Context, name string, args ...string) (string, error) {
+		return `{"data":[]}`, nil
+	}
+
+	mgr := NewManager(&config.Config{RemoteEndpoint: "http://remote:8080"})
+	models, err := mgr.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 0 {
+		t.Errorf("expected 0 models, got %d", len(models))
+	}
+}
+
+func TestShow_ExecError(t *testing.T) {
+	oldRun := runOutput
+	defer func() { runOutput = oldRun }()
+
+	runOutput = func(ctx context.Context, name string, args ...string) (string, error) {
+		return "", errors.New("inspect failed")
+	}
+
+	mgr := NewManager(&config.Config{})
+	_, err := mgr.Show(context.Background(), "model")
+	if err == nil {
+		t.Error("expected error")
+	}
+}
+
+func TestModelIDFromEndpoint_Empty(t *testing.T) {
+	oldRun := runOutput
+	defer func() { runOutput = oldRun }()
+
+	runOutput = func(ctx context.Context, name string, args ...string) (string, error) {
+		return `{"data":[]}`, nil
+	}
+
+	mgr := NewManager(&config.Config{})
+	id, err := mgr.ModelIDFromEndpoint(context.Background(), "http://localhost:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "" {
+		t.Errorf("expected empty, got %q", id)
+	}
+}
+
+func TestSizeCheck_LowVRAM(t *testing.T) {
+	oldGlob := config.DRMDeviceGlob
+	defer func() { config.DRMDeviceGlob = oldGlob }()
+
+	// Set up GPU with 16GB total, 2GB free — 4GB model should trigger low warning.
+	dir := t.TempDir()
+	cardDir := filepath.Join(dir, "card0", "device")
+	os.MkdirAll(cardDir, 0755)
+	os.WriteFile(filepath.Join(cardDir, "vendor"), []byte("0x1002\n"), 0644)
+	os.WriteFile(filepath.Join(cardDir, "mem_info_vram_total"), []byte("17179869184\n"), 0644)
+	os.WriteFile(filepath.Join(cardDir, "mem_info_vram_used"), []byte("15032385536\n"), 0644)
+	config.DRMDeviceGlob = filepath.Join(dir, "card*", "device")
+
+	mgr := NewManager(&config.Config{})
+	// 4GB model on GPU with only 2GB free
+	err := mgr.SizeCheck(4 * 1024 * 1024 * 1024)
+	if err == nil {
+		t.Error("expected 'low free VRAM' error")
+	}
+}
+
+func TestSizeCheck_OK(t *testing.T) {
+	oldGlob := config.DRMDeviceGlob
+	defer func() { config.DRMDeviceGlob = oldGlob }()
+
+	dir := t.TempDir()
+	cardDir := filepath.Join(dir, "card0", "device")
+	os.MkdirAll(cardDir, 0755)
+	os.WriteFile(filepath.Join(cardDir, "vendor"), []byte("0x1002\n"), 0644)
+	os.WriteFile(filepath.Join(cardDir, "mem_info_vram_total"), []byte("8589934592\n"), 0644)
+	os.WriteFile(filepath.Join(cardDir, "mem_info_vram_used"), []byte("0\n"), 0644)
+	config.DRMDeviceGlob = filepath.Join(dir, "card*", "device")
+
+	mgr := NewManager(&config.Config{})
+	// 1GB model on 8GB GPU — should be fine.
+	err := mgr.SizeCheck(1 * 1024 * 1024 * 1024)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}

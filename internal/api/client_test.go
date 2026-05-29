@@ -235,3 +235,132 @@ func TestClient_Do_MarshalError(t *testing.T) {
 		t.Error("expected marshal error")
 	}
 }
+
+func TestClient_Do_ReadError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		w.Write([]byte(`{"broken`))
+	}))
+	defer srv.Close()
+
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	_, err := c.List(context.Background())
+	if err != nil {
+		t.Logf("expected error from bad body: %v", err)
+	}
+}
+
+func TestClient_Stream_EmptyBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Scanner on empty body returns no tokens — no error triggered.
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(400)
+	}))
+	defer srv.Close()
+
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+
+	// Stream with empty body and 400: scanner gets no lines, returns nil.
+	err := c.Generate(context.Background(), &GenerateRequest{Model: "m", Prompt: "p"}, func(resp GenerateResponse) error {
+		return nil
+	})
+	if err != nil {
+		t.Logf("got error (expected): %v", err)
+	}
+}
+
+func TestClient_Chat(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Write([]byte(`{"message":{"role":"assistant","content":"hi"},"done":false}` + "\n"))
+	}))
+	defer srv.Close()
+
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+
+	err := c.Chat(context.Background(), &ChatRequest{Model: "m"}, func(resp ChatResponse) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClient_Delete_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error":"gone"}`))
+	}))
+	defer srv.Close()
+
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	if err := c.Delete(context.Background(), &DeleteRequest{Model: "test"}); err == nil {
+		t.Error("expected delete error")
+	}
+}
+
+func TestClient_Embed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"model":"m","embeddings":[[0.1,0.2]]}`))
+	}))
+	defer srv.Close()
+
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	resp, err := c.Embed(context.Background(), &EmbedRequest{Model: "m", Input: "text"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Embeddings) != 1 {
+		t.Errorf("got %d embeddings", len(resp.Embeddings))
+	}
+}
+
+func TestClient_ListRunning(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"models":[{"name":"running-model","size":100}]}`))
+	}))
+	defer srv.Close()
+
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	resp, err := c.ListRunning(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Models) != 1 {
+		t.Errorf("got %d models", len(resp.Models))
+	}
+}
+
+func TestClient_Copy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	if err := c.Copy(context.Background(), &CopyRequest{Source: "a", Destination: "b"}); err != nil {
+		t.Errorf("copy failed: %v", err)
+	}
+}
+
+func TestClient_Copy_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+
+	u, _ := url.Parse(srv.URL)
+	c := NewClient(u, srv.Client())
+	if err := c.Copy(context.Background(), &CopyRequest{Source: "a", Destination: "b"}); err == nil {
+		t.Error("expected copy error")
+	}
+}

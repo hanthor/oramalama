@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hanthor/oramalama/internal/config"
 )
@@ -1018,5 +1019,73 @@ func TestResolveRunTarget_OneArgAmbiguous(t *testing.T) {
 	_, _, err := ResolveRunTarget(context.Background(), "", []string{"not-a-model"})
 	if err == nil {
 		t.Error("expected error for ambiguous single arg")
+	}
+}
+
+func TestUnitExists_Mock(t *testing.T) {
+	// UnitExists uses exec.CommandContext directly (not execCapture).
+	// It's inherently hard to mock without global injection.
+	// We just verify it runs without panicking.
+	ok := UnitExists(context.Background(), "nonexistent-unit-xyz")
+	if ok {
+		t.Log("unit unexpectedly exists (CI pre-setup?)")
+	}
+}
+
+func TestWaitForServer_Mock(t *testing.T) {
+	oldHTTP := httpDo
+	defer func() { httpDo = oldHTTP }()
+
+	httpDo = func(req *http.Request) (*http.Response, error) {
+		body := io.NopCloser(strings.NewReader(`{"data":[{"id":"ready"}]}`))
+		return &http.Response{StatusCode: 200, Body: body}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := WaitForServer(ctx, "http://localhost:8080")
+	if err != nil {
+		t.Errorf("WaitForServer failed: %v", err)
+	}
+}
+
+func TestWaitForServer_Timeout(t *testing.T) {
+	t.Skip("WaitForServer has hardcoded 120s deadline — not mockable with short context")
+}
+
+func TestStopCompetingLocalModels_Mock(t *testing.T) {
+	oldCap := execCapture
+	oldRun := execRun
+	defer func() { execCapture = oldCap; execRun = oldRun }()
+
+	execCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		if strings.HasPrefix(name, "systemctl") {
+			return "ramalama-other.service loaded active running\n", nil
+		}
+		if strings.HasPrefix(name, "ramalama") && args[0] == "ps" {
+			return "oramalama\n", nil
+		}
+		return "", nil
+	}
+
+	var stopped []string
+	execRun = func(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
+		if name == "systemctl" && args[0] == "--user" && args[1] == "stop" {
+			stopped = append(stopped, args[2])
+		}
+		if name == "ramalama" && args[0] == "stop" {
+			stopped = append(stopped, "ramalama-stop")
+		}
+		return nil
+	}
+
+	var out bytes.Buffer
+	err := stopCompetingLocalModels(context.Background(), "some-model", false, &out, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stopped) < 2 {
+		t.Errorf("expected 2 stops (systemctl + ramalama), got %d: %v", len(stopped), stopped)
 	}
 }
