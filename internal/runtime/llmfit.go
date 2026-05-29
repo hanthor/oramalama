@@ -39,16 +39,15 @@ type LlmfitModel struct {
 // vramGB is the total VRAM/unified-memory on the machine.
 // Returns nil, nil if llmfit is not installed.
 func LlmfitRecommend(ctx context.Context, vramGB int) ([]LlmfitModel, error) {
-	if _, err := exec.LookPath("llmfit"); err != nil {
-		return nil, nil // not installed, not an error
+	if _, err := ExecLookPath("llmfit"); err != nil {
+		return nil, nil
 	}
 
-	// Give llmfit a generous timeout — it may hit HuggingFace API.
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
 	memFlag := fmt.Sprintf("%dG", vramGB)
-	cmd := exec.CommandContext(ctx, "llmfit",
+	out, err := ExecCapture(ctx, "llmfit",
 		"--memory", memFlag,
 		"recommend",
 		"--use-case", "coding",
@@ -56,17 +55,14 @@ func LlmfitRecommend(ctx context.Context, vramGB int) ([]LlmfitModel, error) {
 		"-n", "8",
 		"--json",
 	)
-
-	out, err := cmd.Output()
 	if err != nil {
-		// llmfit errors are non-fatal — caller can proceed without suggestions.
 		return nil, nil
 	}
 
 	var result struct {
 		Models []LlmfitModel `json:"models"`
 	}
-	if err := json.Unmarshal(out, &result); err != nil {
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
 		return nil, nil
 	}
 	return result.Models, nil
@@ -75,7 +71,7 @@ func LlmfitRecommend(ctx context.Context, vramGB int) ([]LlmfitModel, error) {
 // LlmfitInfo calls `llmfit info <name> --json` with a 10-second timeout.
 // Returns nil, nil if not installed or not found.
 func LlmfitInfo(ctx context.Context, modelName string) (*LlmfitModel, error) {
-	if _, err := exec.LookPath("llmfit"); err != nil {
+	if _, err := ExecLookPath("llmfit"); err != nil {
 		return nil, nil
 	}
 

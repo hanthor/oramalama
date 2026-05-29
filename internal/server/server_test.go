@@ -1111,3 +1111,26 @@ func TestPushStream(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != 200 { t.Errorf("status: %d", w.Code) }
 }
+
+func TestRequestLogger_Middleware(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.Use(s.requestLogger())
+	r.GET("/logtest", func(c *gin.Context) { c.String(200, "ok") })
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequest("GET", "/logtest", nil))
+	if rr.Code != 200 { t.Error(rr.Code) }
+}
+
+func TestRegisterRoutes_Endpoints(t *testing.T) {
+	s := newTestServer()
+	r := gin.New()
+	s.registerRoutes(r)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+	if rr.Code != 200 { t.Error(rr.Code) }
+	rr2 := httptest.NewRecorder()
+	r.ServeHTTP(rr2, httptest.NewRequest("GET", "/api/version", nil))
+	if rr2.Code != 200 { t.Error(rr2.Code) }
+}

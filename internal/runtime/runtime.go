@@ -34,6 +34,9 @@ var ExecCapture = func(ctx context.Context, name string, args ...string) (string
 	return strings.TrimSpace(stdout.String()), nil
 }
 
+// ExecLookPath looks up a binary in PATH. Injectable for tests.
+var ExecLookPath = exec.LookPath
+
 // ExecRun runs a command, wiring stdin/stdout/stderr. Tests can override.
 var ExecRun = func(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
 	cmd := exec.CommandContext(ctx, name, args...)

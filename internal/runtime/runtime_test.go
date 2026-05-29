@@ -1246,3 +1246,57 @@ func TestEnsureServer_LowVRAM_Warning(t *testing.T) {
 	_, _, err := EnsureServer(context.Background(), "big", false, &out, &out)
 	if err != nil { t.Logf("low VRAM: %v", err) }
 }
+
+func TestLlmfitRecommend_NotInstalled(t *testing.T) {
+	oldL := ExecLookPath; oldC := ExecCapture
+	defer func() { ExecLookPath = oldL; ExecCapture = oldC }()
+	ExecLookPath = func(file string) (string, error) { return "", errors.New("not found") }
+	models, err := LlmfitRecommend(context.Background(), 16)
+	if err != nil { t.Fatal(err) }
+	if models != nil { t.Error("expected nil when not installed") }
+}
+
+func TestLlmfitRecommend_Mock(t *testing.T) {
+	oldL := ExecLookPath; oldC := ExecCapture
+	defer func() { ExecLookPath = oldL; ExecCapture = oldC }()
+	ExecLookPath = func(file string) (string, error) { return "/usr/bin/llmfit", nil }
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		return `{"models":[{"name":"Qwen-7B","score":90,"best_quant":"Q4_K_M","gguf_sources":[{"provider":"unsloth","repo":"u/qwen"}]}]}`, nil
+	}
+	models, err := LlmfitRecommend(context.Background(), 16)
+	if err != nil { t.Fatal(err) }
+	if len(models) != 1 || models[0].Name != "Qwen-7B" { t.Errorf("%+v", models) }
+}
+
+func TestLlmfitRecommend_ExecError(t *testing.T) {
+	oldL := ExecLookPath; oldC := ExecCapture
+	defer func() { ExecLookPath = oldL; ExecCapture = oldC }()
+	ExecLookPath = func(file string) (string, error) { return "/bin/llmfit", nil }
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		return "", errors.New("llmfit crashed")
+	}
+	models, err := LlmfitRecommend(context.Background(), 16)
+	if err != nil { t.Fatal(err) }
+	if models != nil { t.Error("expected nil on exec error") }
+}
+
+func TestLlmfitRecommend_BadJSON(t *testing.T) {
+	oldL := ExecLookPath; oldC := ExecCapture
+	defer func() { ExecLookPath = oldL; ExecCapture = oldC }()
+	ExecLookPath = func(file string) (string, error) { return "/bin/llmfit", nil }
+	ExecCapture = func(ctx context.Context, name string, args ...string) (string, error) {
+		return "not json", nil
+	}
+	models, err := LlmfitRecommend(context.Background(), 16)
+	if err != nil { t.Fatal(err) }
+	if models != nil { t.Error("expected nil on bad JSON") }
+}
+
+func TestLlmfitInfo_NotInstalled(t *testing.T) {
+	oldL := ExecLookPath
+	defer func() { ExecLookPath = oldL }()
+	ExecLookPath = func(file string) (string, error) { return "", errors.New("not found") }
+	m, err := LlmfitInfo(context.Background(), "test")
+	if err != nil { t.Fatal(err) }
+	if m != nil { t.Error("expected nil") }
+}
