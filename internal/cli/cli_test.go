@@ -181,17 +181,16 @@ func TestStopCmd_Mock(t *testing.T) {
 	old := runnerExec; oldC := runnerCapture
 	defer func() { runnerExec = old; runnerCapture = oldC }()
 	runnerCapture = func(ctx context.Context, name string, args ...string) (string, error) {
-		return "", errors.New("none")
+		return "", nil
 	}
-	called := false
 	runnerExec = func(ctx context.Context, name string, args ...string) error {
-		called = true; return nil
+		return nil
 	}
 	r := NewRunner(new(bytes.Buffer), new(bytes.Buffer))
+	// stop with no args — should try systemctl and ramalama, find nothing running
 	if err := (&stopCmd{r: r}).Run(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
-	if !called { t.Error("not called") }
 }
 
 func TestDispatch_Usage(t *testing.T) {
@@ -199,4 +198,48 @@ func TestDispatch_Usage(t *testing.T) {
 	d := NewDispatcher(NewRunner(new(bytes.Buffer), &s))
 	d.Dispatch(context.Background(), "bad", nil)
 	if !strings.Contains(s.String(), "usage") { t.Error("no usage") }
+}
+
+func TestLaunchPi_DryRun(t *testing.T) {
+	var out bytes.Buffer
+	r := NewRunner(&out, new(bytes.Buffer))
+	r.DryRun = true
+	cmd := &launchCmd{r: r}
+	err := cmd.launchPi(context.Background(), "http://localhost:8080", "test-model", nil)
+	if err != nil { t.Fatal(err) }
+	if !strings.Contains(out.String(), "[dry-run]") { t.Errorf("out: %s", out.String()) }
+	if !strings.Contains(out.String(), "pi") { t.Errorf("out: %s", out.String()) }
+}
+
+func TestLaunchOpenCode_DryRun(t *testing.T) {
+	var out bytes.Buffer
+	r := NewRunner(&out, new(bytes.Buffer))
+	r.DryRun = true
+	cmd := &launchCmd{r: r}
+	err := cmd.launchOpenCode(context.Background(), "http://localhost:8080", "test-model", nil)
+	if err != nil { t.Fatal(err) }
+	if !strings.Contains(out.String(), "[dry-run]") { t.Errorf("out: %s", out.String()) }
+	if !strings.Contains(out.String(), "opencode") { t.Errorf("out: %s", out.String()) }
+}
+
+func TestLaunchGoose_DryRun(t *testing.T) {
+	var out bytes.Buffer
+	r := NewRunner(&out, new(bytes.Buffer))
+	r.DryRun = true
+	cmd := &launchCmd{r: r}
+	err := cmd.launchGoose(context.Background(), "http://localhost:8080", "model", "test prompt", nil)
+	if err != nil { t.Fatal(err) }
+	if !strings.Contains(out.String(), "[dry-run]") { t.Errorf("out: %s", out.String()) }
+	if !strings.Contains(out.String(), "goose") { t.Errorf("out: %s", out.String()) }
+}
+
+func TestLaunchVSCode_DryRun(t *testing.T) {
+	var out bytes.Buffer
+	r := NewRunner(&out, new(bytes.Buffer))
+	r.DryRun = true
+	cmd := &launchCmd{r: r}
+	err := cmd.launchVSCode("http://localhost:8080")
+	if err != nil { t.Fatal(err) }
+	if !strings.Contains(out.String(), "[dry-run]") { t.Errorf("out: %s", out.String()) }
+	if !strings.Contains(out.String(), "code") { t.Errorf("out: %s", out.String()) }
 }

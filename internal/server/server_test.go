@@ -1134,3 +1134,29 @@ func TestRegisterRoutes_Endpoints(t *testing.T) {
 	r.ServeHTTP(rr2, httptest.NewRequest("GET", "/api/version", nil))
 	if rr2.Code != 200 { t.Error(rr2.Code) }
 }
+
+func TestStreamChat_DoneOutput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/api/chat", s.chatHandler)
+	body := `{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	req := httptest.NewRequest("POST", "/api/chat", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != 200 { t.Error(rr.Code) }
+}
+
+func TestAnthropicStream_Done(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	s := newTestServer()
+	r.POST("/v1/messages", s.anthropicMessagesHandler)
+	body := `{"model":"test","messages":[{"role":"user","content":"hi"}],"max_tokens":100,"stream":true}`
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != 200 { t.Error(rr.Code) }
+}
