@@ -1,3 +1,10 @@
+## [0.1.9](https://github.com/hanthor/oramalama/compare/v0.1.8...v0.1.9) (2026-05-29)
+
+
+### Bug Fixes
+
+* remove duplicate TestIntegration_CodingToolConfig ([224acc1](https://github.com/hanthor/oramalama/commit/224acc10fec773d09516d9bf1297f07cc088e6e8))
+
 ## [0.1.8](https://github.com/hanthor/oramalama/compare/v0.1.7...v0.1.8) (2026-05-29)
 
 
