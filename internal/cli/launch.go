@@ -236,10 +236,29 @@ func (c *launchCmd) tuiPickModel(ctx context.Context) (string, error) {
 	}
 	items = tui.ReorderItems(items)
 
-	selected, err := tui.SelectSingle("Select a model to serve", items, currentDefault)
+	selected, err := tui.SelectSingle("Select a model to serve", items, currentDefault, tui.SelectSingleOpts{
+		OnQuery:     hfQueryFunc(totalVRAM),
+		RemoteLabel: "From HuggingFace (pull on select)",
+	})
 	if err != nil {
 		return "", err
 	}
+
+	// hf:// ref means the user picked a remote candidate — pull it first.
+	if strings.HasPrefix(selected, "hf://") {
+		fmt.Fprintf(c.r.Stdout, "pulling %s via ramalama...\n", selected)
+		if c.r.DryRun {
+			fmt.Fprintf(c.r.Stdout, "[dry-run] ramalama pull %s\n", selected)
+			return selected, nil
+		}
+		cmd := exec.CommandContext(ctx, "ramalama", "pull", selected)
+		cmd.Stdout = c.r.Stdout
+		cmd.Stderr = c.r.Stderr
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("ramalama pull: %w", err)
+		}
+	}
+
 	return selected, nil
 }
 

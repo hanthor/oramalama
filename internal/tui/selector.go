@@ -3,10 +3,26 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// QueryFunc fetches additional remote items for a query string.
+// Called from a bubbletea Cmd goroutine; should be safe to invoke with
+// any string (including empty). Implementations should respect their own
+// timeouts — the selector debounces but does not cancel in-flight calls.
+type QueryFunc func(query string) []SelectItem
+
+const remoteDebounce = 300 * time.Millisecond
+
+// remoteResultsMsg carries remote query results back to the selector.
+type remoteResultsMsg struct {
+	gen   int
+	query string
+	items []SelectItem
+}
 
 const maxSelectorItems = 10
 
@@ -52,6 +68,9 @@ type SelectItem struct {
 	Name        string
 	Description string
 	Recommended bool
+	// Remote marks an item as fetched from an external source (e.g. HuggingFace).
+	// Remote items render in their own section and are excluded from the local filter.
+	Remote bool
 }
 
 // ReorderItems returns a copy with recommended items first, then non-recommended,
@@ -79,6 +98,13 @@ type selectorModel struct {
 	cancelled    bool
 	helpText     string
 	width        int
+
+	// Remote-query support
+	onQuery     QueryFunc
+	remoteLabel string
+	remoteItems []SelectItem
+	queryGen    int
+	queryActive bool
 }
 
 func selectorModelWithCurrent(title string, items []SelectItem, current string) selectorModel {
@@ -91,7 +117,8 @@ func selectorModelWithCurrent(title string, items []SelectItem, current string) 
 	return m
 }
 
-func (m selectorModel) filteredItems() []SelectItem {
+// localFiltered returns just the local items matching the current filter.
+func (m selectorModel) localFiltered() []SelectItem {
 	if m.filter == "" {
 		return m.items
 	}
@@ -105,8 +132,37 @@ func (m selectorModel) filteredItems() []SelectItem {
 	return result
 }
 
+// filteredItems returns local matches followed by remote results, for cursor
+// indexing and Enter selection. Rendering groups them visually.
+func (m selectorModel) filteredItems() []SelectItem {
+	local := m.localFiltered()
+	if len(m.remoteItems) == 0 {
+		return local
+	}
+	out := make([]SelectItem, 0, len(local)+len(m.remoteItems))
+	out = append(out, local...)
+	out = append(out, m.remoteItems...)
+	return out
+}
+
 func (m selectorModel) Init() tea.Cmd {
 	return nil
+}
+
+// scheduleQuery returns a Cmd that fires onQuery after remoteDebounce,
+// tagged with the current gen so stale responses can be ignored.
+func (m *selectorModel) scheduleQuery() tea.Cmd {
+	if m.onQuery == nil || m.filter == "" {
+		return nil
+	}
+	m.queryGen++
+	gen := m.queryGen
+	query := m.filter
+	fn := m.onQuery
+	m.queryActive = true
+	return tea.Tick(remoteDebounce, func(time.Time) tea.Msg {
+		return remoteResultsMsg{gen: gen, query: query, items: fn(query)}
+	})
 }
 
 // otherStart returns the index of the first non-recommended item in the filtered list.
@@ -211,6 +267,15 @@ func (m selectorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case remoteResultsMsg:
+		// Drop stale responses; only the newest queryGen is honored.
+		if msg.gen != m.queryGen || msg.query != m.filter {
+			return m, nil
+		}
+		m.queryActive = false
+		m.remoteItems = msg.items
+		return m, nil
+
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyEsc:
@@ -227,6 +292,15 @@ func (m selectorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.selected = filtered[m.cursor].Name
 			}
 			return m, tea.Quit
+
+		case tea.KeyBackspace, tea.KeyRunes:
+			prevFilter := m.filter
+			m.updateNavigation(msg)
+			if m.filter != prevFilter {
+				m.remoteItems = nil
+				return m, m.scheduleQuery()
+			}
+			return m, nil
 
 		default:
 			m.updateNavigation(msg)
@@ -268,8 +342,13 @@ func (m selectorModel) renderContent() string {
 		s.WriteString(selectorItemStyle.Render(selectorDescStyle.Render("(no matches)")))
 		s.WriteString("\n")
 	} else if m.filter != "" {
-		s.WriteString(sectionHeaderStyle.Render("Top Results"))
-		s.WriteString("\n")
+		// Visually separate local matches from remote results.
+		localCount := len(m.localFiltered())
+
+		if localCount > 0 {
+			s.WriteString(sectionHeaderStyle.Render("Top Results"))
+			s.WriteString("\n")
+		}
 
 		displayCount := min(len(filtered), maxSelectorItems)
 		for i := range displayCount {
@@ -277,7 +356,24 @@ func (m selectorModel) renderContent() string {
 			if idx >= len(filtered) {
 				break
 			}
+			if idx == localCount && len(m.remoteItems) > 0 {
+				label := m.remoteLabel
+				if label == "" {
+					label = "Remote"
+				}
+				if localCount > 0 {
+					s.WriteString("\n")
+				}
+				s.WriteString(sectionHeaderStyle.Render(label))
+				s.WriteString("\n")
+			}
 			m.renderItem(&s, filtered[idx], idx)
+		}
+
+		if m.queryActive && len(m.remoteItems) == 0 && m.onQuery != nil {
+			s.WriteString("\n")
+			s.WriteString(selectorMoreStyle.Render("searching HuggingFace…"))
+			s.WriteString("\n")
 		}
 
 		if remaining := len(filtered) - m.scrollOffset - displayCount; remaining > 0 {
@@ -374,14 +470,27 @@ func cursorForCurrent(items []SelectItem, current string) int {
 	return 0
 }
 
+// SelectSingleOpts configures optional features of SelectSingle.
+type SelectSingleOpts struct {
+	// OnQuery is invoked (debounced) with the current filter string.
+	// Returned items render in a separate "RemoteLabel" section below local
+	// matches. Mark items with Remote=true so callers can distinguish.
+	OnQuery     QueryFunc
+	RemoteLabel string
+}
+
 // SelectSingle shows a bubbletea single-selection picker.
 // Returns the selected item name, or an error if cancelled.
-func SelectSingle(title string, items []SelectItem, current string) (string, error) {
+func SelectSingle(title string, items []SelectItem, current string, opts ...SelectSingleOpts) (string, error) {
 	if len(items) == 0 {
 		return "", fmt.Errorf("no items to select from")
 	}
 
 	m := selectorModelWithCurrent(title, items, current)
+	if len(opts) > 0 {
+		m.onQuery = opts[0].OnQuery
+		m.remoteLabel = opts[0].RemoteLabel
+	}
 
 	p := tea.NewProgram(m)
 	finalModel, err := p.Run()

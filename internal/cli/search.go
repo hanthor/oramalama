@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/hanthor/oramalama/internal/runtime"
 	"github.com/hanthor/oramalama/internal/tui"
@@ -67,12 +68,32 @@ func runSearch(ctx context.Context, r *Runner) error {
 	items = tui.ReorderItems(items)
 
 	fmt.Fprintf(r.Stdout, "\nllmfit recommendations for your hardware:\n")
-	selected, err := tui.SelectSingle("Select a model to pull", items, "")
+	selected, err := tui.SelectSingle("Select a model to pull", items, "", tui.SelectSingleOpts{
+		OnQuery:     hfQueryFunc(totalVRAM),
+		RemoteLabel: "From HuggingFace",
+	})
 	if err != nil {
 		if errors.Is(err, tui.ErrCancelled) {
 			return nil
 		}
 		return err
+	}
+
+	// Remote pick: pull the hf:// ref directly and bypass llmfit lookup.
+	if strings.HasPrefix(selected, "hf://") {
+		fmt.Fprintf(r.Stdout, "\npulling %s via ramalama...\n", selected)
+		if r.DryRun {
+			fmt.Fprintf(r.Stdout, "[dry-run] ramalama pull %s\n", selected)
+			return nil
+		}
+		cmd := exec.CommandContext(ctx, "ramalama", "pull", selected)
+		cmd.Stdout = r.Stdout
+		cmd.Stderr = r.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("ramalama pull: %w", err)
+		}
+		fmt.Fprintf(r.Stdout, "pulled %s\n", selected)
+		return nil
 	}
 
 	// Find the selected recommendation.
@@ -113,4 +134,35 @@ func capture(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err
+}
+
+// hfQueryFunc returns a tui.QueryFunc that searches HuggingFace for GGUF models
+// that fit the local VRAM budget. Each result becomes a tui.SelectItem whose
+// Name is a ramalama-pullable hf:// reference.
+func hfQueryFunc(budgetGB int) tui.QueryFunc {
+	return func(query string) []tui.SelectItem {
+		if len(query) < 3 {
+			return nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		budget := float64(budgetGB)
+		if budget <= 0 {
+			budget = 0 // 0 disables size filtering in runtime.HFSearch
+		}
+		results, err := runtime.HFSearch(ctx, query, budget, 8)
+		if err != nil || len(results) == 0 {
+			return nil
+		}
+		items := make([]tui.SelectItem, 0, len(results))
+		for _, r := range results {
+			desc := fmt.Sprintf("%.1f GB · %s · %d downloads", r.SizeGB, r.Quant, r.Downloads)
+			items = append(items, tui.SelectItem{
+				Name:        r.Ref(),
+				Description: desc,
+				Remote:      true,
+			})
+		}
+		return items
+	}
 }
