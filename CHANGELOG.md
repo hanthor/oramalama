@@ -1,3 +1,10 @@
+# [0.2.0](https://github.com/hanthor/oramalama/compare/v0.1.12...v0.2.0) (2026-06-10)
+
+
+### Features
+
+* HuggingFace GGUF search in TUI model picker ([dab1b21](https://github.com/hanthor/oramalama/commit/dab1b214c55e052f37631946e634d357dd33f466))
+
 ## [0.1.12](https://github.com/hanthor/oramalama/compare/v0.1.11...v0.1.12) (2026-05-29)
 
 
